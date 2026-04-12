@@ -2,7 +2,7 @@
 
 Build a searchable SQLite FTS5 index from any GitHub repo — code, issues, wiki, commits — and deploy it to GitHub Pages.
 
-One action. Any public repo. Full-text fuzzy search over everything.
+One action. Any public repo. Full-text fuzzy search over everything. Queries fetch **< 1% of the database** via HTTP range requests.
 
 ## What it does
 
@@ -21,9 +21,54 @@ Memex crawls a GitHub repository and builds a SQLite database with FTS5 full-tex
 - **BM25 ranking** — relevance-scored results
 - **JSON metadata** — structured access to file paths, authors, dates, labels
 
-Each data source gets its own table, so you can search code separately from issues, or query across everything at once.
+## Distributables
 
-## Usage
+Pre-built bundles in `dist/` — no npm or bundler needed to use them.
+
+### dist/wasm/ — WASM build (recommended)
+
+Separate `.wasm` file, smallest JS payload. ~648 KB gzip transfer.
+
+```
+memex.js        214 KB   Library entry point
+memex-141.js    235 KB   Background SQLite worker
+sqlite3.wasm    1.45 MB  SQLite 3.44.2 (wasm-opt -Oz)
+demo.html        16 KB   Self-contained demo (CSS inlined)
+```
+
+### dist/js/ — Pure JS build
+
+WASM base64-inlined in JS. No `.wasm` file needed. Larger but simpler deployment.
+
+```
+memex.js          7 KB   Library entry point
+memex-*.js     ~2.2 MB   Worker with inlined WASM
+demo.html        16 KB   Self-contained demo (CSS inlined)
+```
+
+### Usage
+
+```html
+<script type="module">
+import { openMemexDb, query } from './memex.js';
+
+const { db, close } = await openMemexDb('https://example.github.io/repo/index.db');
+
+// FTS5 porter search with BM25 ranking
+const results = await query(db, `
+  SELECT path, title, bm25(search_porter, 1,1,5,1,1) as rank
+  FROM search_porter WHERE search_porter MATCH 'error handling'
+  ORDER BY rank LIMIT 10
+`);
+
+console.log(results.columns, results.rows);
+await close();
+</script>
+```
+
+Architecture: **1 background Web Worker** (sync mode). No SharedArrayBuffer required. Works on GitHub Pages, any static host, localhost.
+
+## GitHub Action
 
 Add this workflow to any repo:
 
@@ -50,19 +95,28 @@ jobs:
       repo: ${{ github.repository }}
 ```
 
-The index will be available at `https://<owner>.github.io/<repo>/index.db`.
+The index will be available at `https://<owner>.github.io/<repo>/index.db` with a live query demo.
+
+### Action inputs
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `repo` | current repo | GitHub repo to index (`owner/repo`) |
+| `subdir` | `""` | Subdirectory to index (e.g. `src`) |
+| `branch` | `main` | Branch to index |
+| `skip-issues` | `false` | Skip GitHub Issues |
+| `skip-prs` | `false` | Skip Pull Requests |
+| `skip-wiki` | `false` | Skip Wiki pages |
+| `skip-commits` | `false` | Skip git commits |
 
 ## Tables
 
 | Table | Source | Tokenizer | Use case |
 |---|---|---|---|
-| `files` | Repo text files | — | Raw file content + metadata |
-| `issues` | GitHub Issues | — | Issue titles, bodies, comments |
-| `pull_requests` | GitHub PRs | — | PR titles, bodies, review comments |
-| `commits` | Git log | — | Commit messages + metadata |
-| `wiki` | GitHub Wiki | — | Wiki page content |
+| `chunks` | All sources | — | Unified base table |
 | `search_trigram` | All sources | `trigram` | Fuzzy/substring search |
 | `search_porter` | All sources | `porter unicode61` | Stemmed word search |
+| `meta` | Build info | — | Repo name, chunk counts |
 
 ## Query examples
 
@@ -72,30 +126,22 @@ SELECT source_type, path, title, bm25(search_trigram) as rank
 FROM search_trigram WHERE search_trigram MATCH '"FastLED"'
 ORDER BY rank LIMIT 10;
 
--- Stemmed search in issues only
-SELECT source_type, path, title, snippet(search_porter, 3, '**', '**', '...', 20) as snip
-FROM search_porter WHERE search_porter MATCH 'memory leak' AND source_type = 'issue'
+-- Stemmed search with snippets
+SELECT path, title, snippet(search_porter, 3, '**', '**', '...', 20) as snip
+FROM search_porter WHERE search_porter MATCH 'memory leak'
 ORDER BY bm25(search_porter) LIMIT 10;
 
--- Browse all issues with metadata
+-- Browse issues with metadata
 SELECT path, title, json_extract(metadata, '$.state') as state,
        json_extract(metadata, '$.labels') as labels
-FROM issues ORDER BY json_extract(metadata, '$.number') DESC;
-
--- Search code files only
-SELECT path, title, json_extract(metadata, '$.lines') as lines
-FROM files WHERE body LIKE '%void setup()%';
+FROM chunks WHERE source_type = 'issue';
 ```
 
 ## Client access
 
-### Rust (recommended for agents)
+### Browser (WASM + HTTP range requests)
 
-```rust
-use rusqlite::Connection;
-// With sqlite-vfs-http for HTTP range request access:
-let conn = Connection::open("https://owner.github.io/repo/index.db")?;
-```
+Use the pre-built bundles from `dist/wasm/` or `dist/js/`. See [Usage](#usage) above.
 
 ### Python
 
@@ -103,6 +149,11 @@ let conn = Connection::open("https://owner.github.io/repo/index.db")?;
 import sqlite3, urllib.request
 urllib.request.urlretrieve('https://owner.github.io/repo/index.db', 'index.db')
 conn = sqlite3.connect('index.db')
+rows = conn.execute("""
+    SELECT path, title, bm25(search_porter) as rank
+    FROM search_porter WHERE search_porter MATCH 'error handling'
+    ORDER BY rank LIMIT 10
+""").fetchall()
 ```
 
 ### Node.js
@@ -111,31 +162,39 @@ conn = sqlite3.connect('index.db')
 const Database = require('better-sqlite3');
 // Download index.db first, then:
 const db = new Database('index.db', { readonly: true });
+const results = db.prepare(`
+  SELECT path, title FROM search_porter
+  WHERE search_porter MATCH 'authentication' LIMIT 10
+`).all();
 ```
 
-### Browser (WASM)
+### Rust
 
-The deployed GitHub Pages site includes a live query demo using the official SQLite WASM build with FTS5 support.
+```rust
+use rusqlite::Connection;
+// With sqlite-vfs-http for HTTP range request access:
+let conn = Connection::open("https://owner.github.io/repo/index.db")?;
+```
+
+## Rebuilding bundles
+
+```bash
+cd pages-src
+npm install
+npm run build          # all: wasm + js + demo
+npm run build:wasm     # dist/wasm/ only
+npm run build:js       # dist/js/ only
+npm run build:demo     # pages/ (GitHub Pages deploy)
+```
 
 ## The name
 
-**Memex** (memory + index) was described by [Vannevar Bush](https://en.wikipedia.org/wiki/Vannevar_Bush) in his 1945 essay *[As We May Think](https://www.theatlantic.com/magazine/archive/1945/07/as-we-may-think/303881/)*, published in The Atlantic Monthly.
-
-Bush envisioned a device that would store all of a person's books, records, and communications, compressed onto microfilm, and mechanized so it could be consulted "with exceeding speed and flexibility." The memex would allow its user to build trails of association between documents — linking ideas across sources in a personal, searchable web of knowledge.
+**Memex** (memory + index) was described by [Vannevar Bush](https://en.wikipedia.org/wiki/Vannevar_Bush) in his 1945 essay *[As We May Think](https://www.theatlantic.com/magazine/archive/1945/07/as-we-may-think/303881/)*.
 
 > "Consider a future device... in which an individual stores all his books, records, and communications, and which is mechanized so that it may be consulted with exceeding speed and flexibility. It is an enlarged intimate supplement to his memory."
 > — Vannevar Bush, 1945
 
-The memex was never built as a physical device, but its core ideas directly influenced:
-
-- **Hypertext** — Ted Nelson cited Bush when coining the term in 1965
-- **The World Wide Web** — Tim Berners-Lee acknowledged Bush's essay as an inspiration
-- **Personal knowledge management** — the entire field traces back to Bush's vision
-- **Doug Engelbart's oNLine System (NLS)** — the first working hypertext system, built in the 1960s, explicitly inspired by the memex
-
 This project is a small, literal implementation of Bush's idea: take everything in a repository — code, documentation, issues, discussions, history — compress it into a single indexed file, and make it instantly searchable with exceeding speed and flexibility.
-
-The memex that Bush imagined in 1945 is now a SQLite database on GitHub Pages.
 
 ## License
 
