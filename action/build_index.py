@@ -183,12 +183,17 @@ def insert_chunk(conn: sqlite3.Connection, source_type: str, path: str, title: s
 
 def index_files(conn: sqlite3.Connection, repo_dir: Path) -> int:
     count = 0
+    skipped_ext: dict[str, int] = {}
+    total_seen = 0
     for path in sorted(repo_dir.rglob("*")):
         if not path.is_file():
             continue
+        total_seen += 1
         if should_skip(path):
             continue
         if not is_text_file(path):
+            ext = path.suffix.lower() or "(none)"
+            skipped_ext[ext] = skipped_ext.get(ext, 0) + 1
             continue
         if path.stat().st_size > MAX_FILE_SIZE:
             continue
@@ -206,6 +211,20 @@ def index_files(conn: sqlite3.Connection, repo_dir: Path) -> int:
         })
         insert_chunk(conn, "file", rel_path, path.name, body, metadata)
         count += 1
+
+    if count == 0:
+        print(f"    DEBUG: repo_dir={repo_dir}, exists={repo_dir.exists()}, is_dir={repo_dir.is_dir()}")
+        print(f"    DEBUG: total files seen={total_seen}")
+        top_skipped = sorted(skipped_ext.items(), key=lambda x: -x[1])[:10]
+        if top_skipped:
+            print(f"    DEBUG: top skipped extensions: {top_skipped}")
+        # List first 10 files in repo root
+        try:
+            entries = list(repo_dir.iterdir())[:10]
+            print(f"    DEBUG: first entries in repo_dir: {[e.name for e in entries]}")
+        except Exception as e:
+            print(f"    DEBUG: error listing repo_dir: {e}")
+
     return count
 
 
