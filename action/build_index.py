@@ -195,6 +195,8 @@ def index_files(conn: sqlite3.Connection, repo_dir: Path) -> int:
         total_seen += 1
         if should_skip(path):
             skipped_by_skip += 1
+            if skipped_by_skip <= 3:
+                print(f"    DEBUG SKIP: {path} parts={path.parts}")
             continue
         if not is_text_file(path):
             ext = path.suffix.lower() or "(none)"
