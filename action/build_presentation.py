@@ -477,9 +477,10 @@ def optimize_for_http(conn: sqlite3.Connection) -> None:
     conn.execute("INSERT INTO commits_trigram(commits_trigram) VALUES ('optimize')")
     conn.execute("INSERT INTO comments_fts(comments_fts) VALUES ('optimize')")
     conn.commit()
+    # Must switch OFF WAL before VACUUM can change page_size
+    conn.execute("PRAGMA journal_mode = DELETE")
     conn.execute("PRAGMA page_size = 1024")
     conn.execute("VACUUM")
-    conn.execute("PRAGMA journal_mode = DELETE")
 
 
 def main() -> None:
