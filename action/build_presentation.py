@@ -22,7 +22,8 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 PRESENTATION_SCHEMA = """
-PRAGMA journal_mode = WAL;
+PRAGMA journal_mode = DELETE;
+PRAGMA page_size = 1024;
 PRAGMA foreign_keys = ON;
 
 -- Issues & PRs (unified)
@@ -477,9 +478,7 @@ def optimize_for_http(conn: sqlite3.Connection) -> None:
     conn.execute("INSERT INTO commits_trigram(commits_trigram) VALUES ('optimize')")
     conn.execute("INSERT INTO comments_fts(comments_fts) VALUES ('optimize')")
     conn.commit()
-    # Must switch OFF WAL before VACUUM can change page_size
-    conn.execute("PRAGMA journal_mode = DELETE")
-    conn.execute("PRAGMA page_size = 1024")
+    # page_size already set to 1024 at creation, just VACUUM to compact
     conn.execute("VACUUM")
 
 
