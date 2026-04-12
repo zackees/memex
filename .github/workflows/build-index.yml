@@ -7,49 +7,29 @@ on:
         description: 'GitHub repo to index (owner/repo)'
         required: true
         type: string
-      subdir:
-        description: 'Subdirectory to index for files (e.g. "src"). Empty = whole repo.'
+      branch:
+        description: 'Branch to index (default: main)'
         required: false
         type: string
-        default: ''
+        default: 'main'
       fetch-depth:
         description: 'Git fetch depth for commit history'
         required: false
         type: number
-        default: 500
+        default: 5000
   workflow_dispatch:
     inputs:
       repo:
         description: 'GitHub repo to index (owner/repo). Leave empty to index this repo.'
         required: false
         type: string
-      subdir:
-        description: 'Subdirectory to index for files (e.g. "src"). Empty = whole repo.'
-        required: false
-        type: string
-      skip-issues:
-        description: 'Skip indexing GitHub issues'
-        type: boolean
-        default: false
-      skip-prs:
-        description: 'Skip indexing GitHub PRs'
-        type: boolean
-        default: false
-      skip-wiki:
-        description: 'Skip indexing wiki'
-        type: boolean
-        default: false
-      skip-commits:
-        description: 'Skip indexing git commits'
-        type: boolean
-        default: false
       branch:
         description: 'Branch to index (default: main)'
         type: string
         default: 'main'
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
   issues: read
@@ -68,6 +48,7 @@ jobs:
         with:
           repository: zackees/memex
           path: memex
+          fetch-depth: 0
 
       - name: Determine target repo
         id: target
@@ -84,7 +65,7 @@ jobs:
           repository: ${{ steps.target.outputs.repo }}
           ref: ${{ inputs.branch || 'main' }}
           path: target
-          fetch-depth: ${{ inputs.fetch-depth || 500 }}
+          fetch-depth: ${{ inputs.fetch-depth || 5000 }}
 
       - name: Fallback - download repo zip
         if: steps.checkout-target.outcome == 'failure'
@@ -94,53 +75,86 @@ jobs:
           BRANCH="${{ inputs.branch || 'main' }}"
           curl -sSL -o repo.zip "https://github.com/${REPO}/archive/refs/heads/${BRANCH}.zip"
           unzip -q repo.zip
-          # The zip extracts to RepoName-branch/, move to target/
           mv *-"${BRANCH}" target
           echo "Fallback checkout complete"
-          ls target/ | head -10
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Build index
+      # --- Restore cached mirror DB ---
+      - name: Restore mirror DB from cache
+        uses: actions/cache/restore@v4
+        id: cache-restore
+        with:
+          path: mirror.db
+          key: memex-mirror-${{ steps.target.outputs.repo }}-${{ github.run_id }}
+          restore-keys: |
+            memex-mirror-${{ steps.target.outputs.repo }}-
+
+      # --- Incremental sync: issues + PRs + commits ---
+      - name: Sync issues
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          EXTRA_ARGS=""
-          if [ -n "${{ inputs.subdir }}" ]; then
-            EXTRA_ARGS="$EXTRA_ARGS --subdir ${{ inputs.subdir }}"
-          fi
-          if [ "${{ inputs.skip-issues }}" = "true" ]; then
-            EXTRA_ARGS="$EXTRA_ARGS --no-issues"
-          fi
-          if [ "${{ inputs.skip-prs }}" = "true" ]; then
-            EXTRA_ARGS="$EXTRA_ARGS --no-prs"
-          fi
-          if [ "${{ inputs.skip-wiki }}" = "true" ]; then
-            EXTRA_ARGS="$EXTRA_ARGS --no-wiki"
-          fi
-          if [ "${{ inputs.skip-commits }}" = "true" ]; then
-            EXTRA_ARGS="$EXTRA_ARGS --no-commits"
-          fi
-          python memex/action/build_index.py \
+          cd memex/action
+          python index_issues.py \
             --repo "${{ steps.target.outputs.repo }}" \
-            --repo-dir target \
-            --output index.db \
-            $EXTRA_ARGS
+            --db ../../mirror.db
 
+      - name: Sync PRs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd memex/action
+          python index_prs.py \
+            --repo "${{ steps.target.outputs.repo }}" \
+            --db ../../mirror.db
+
+      - name: Sync commits
+        run: |
+          cd memex/action
+          python index_commits.py \
+            --repo-dir ../../target \
+            --db ../../mirror.db \
+            --limit 5000
+
+      # --- Save mirror DB to cache ---
+      - name: Save mirror DB to cache
+        uses: actions/cache/save@v4
+        with:
+          path: mirror.db
+          key: memex-mirror-${{ steps.target.outputs.repo }}-${{ github.run_id }}
+
+      # --- Build presentation DB ---
+      - name: Build presentation DB
+        run: |
+          cd memex/action
+          python build_presentation.py \
+            --mirror ../../mirror.db \
+            --output ../../index.db \
+            --repo "${{ steps.target.outputs.repo }}"
+
+      # --- Checkpoint mirror to branch ---
+      - name: Checkpoint mirror DB
+        run: |
+          cd memex
+          python action/checkpoint.py \
+            --db ../mirror.db \
+            --repo-dir . \
+            --branch memex-data \
+            --max 5
+
+      # --- Prepare and deploy Pages ---
       - name: Prepare Pages artifact
         run: |
           mkdir -p _site
           cp index.db _site/
-          # Deploy demo.html as the index page
           cp memex/dist/wasm/demo.html _site/index.html
-          # Pre-built webpack bundles (sqlite-wasm-http, wasm-opt -Oz)
           cp memex/dist/wasm/memex.js _site/
           cp memex/dist/wasm/memex-*.js _site/
           cp memex/dist/wasm/sqlite3.wasm _site/
-          # Also deploy both dist bundles for downstream consumers
           cp -r memex/dist _site/dist
           echo "=== _site ==="
           find _site -type f | sort

@@ -7,3 +7,4 @@ pages/test*.html
 
 # License txt from webpack
 *.LICENSE.txt
+__pycache__/
