@@ -8,3 +8,6 @@ pages/test*.html
 # License txt from webpack
 *.LICENSE.txt
 __pycache__/
+test_index.db
+test_mirror.db
+mirror.db
