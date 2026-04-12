@@ -97,6 +97,10 @@ def checkpoint(
         # Copy DB to worktree
         shutil.copy2(db_path, existing_db)
 
+        # Set git identity for CI environments
+        run(["git", "config", "user.email", "memex[bot]@users.noreply.github.com"], cwd=worktree, check=False)
+        run(["git", "config", "user.name", "memex[bot]"], cwd=worktree, check=False)
+
         # Commit
         run(["git", "add", "mirror.db"], cwd=worktree)
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
