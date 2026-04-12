@@ -184,24 +184,30 @@ def insert_chunk(conn: sqlite3.Connection, source_type: str, path: str, title: s
 def index_files(conn: sqlite3.Connection, repo_dir: Path) -> int:
     count = 0
     skipped_ext: dict[str, int] = {}
+    skipped_by_skip = 0
+    skipped_by_size = 0
+    skipped_by_read = 0
     total_seen = 0
     for path in sorted(repo_dir.rglob("*")):
         if not path.is_file():
             continue
         total_seen += 1
         if should_skip(path):
+            skipped_by_skip += 1
             continue
         if not is_text_file(path):
             ext = path.suffix.lower() or "(none)"
             skipped_ext[ext] = skipped_ext.get(ext, 0) + 1
             continue
         if path.stat().st_size > MAX_FILE_SIZE:
+            skipped_by_size += 1
             continue
 
         rel_path = str(path.relative_to(repo_dir))
         try:
             body = path.read_text(encoding="utf-8", errors="replace")
         except Exception:
+            skipped_by_read += 1
             continue
 
         metadata = json.dumps({
@@ -214,16 +220,23 @@ def index_files(conn: sqlite3.Connection, repo_dir: Path) -> int:
 
     if count == 0:
         print(f"    DEBUG: repo_dir={repo_dir}, exists={repo_dir.exists()}, is_dir={repo_dir.is_dir()}")
-        print(f"    DEBUG: total files seen={total_seen}")
+        print(f"    DEBUG: total files seen={total_seen}, skipped_by_skip={skipped_by_skip}, skipped_by_ext={sum(skipped_ext.values())}, skipped_by_size={skipped_by_size}, skipped_by_read={skipped_by_read}")
         top_skipped = sorted(skipped_ext.items(), key=lambda x: -x[1])[:10]
         if top_skipped:
             print(f"    DEBUG: top skipped extensions: {top_skipped}")
-        # List first 10 files in repo root
         try:
             entries = list(repo_dir.iterdir())[:10]
             print(f"    DEBUG: first entries in repo_dir: {[e.name for e in entries]}")
         except Exception as e:
             print(f"    DEBUG: error listing repo_dir: {e}")
+        # Show first 5 files that pass should_skip
+        sample = []
+        for p in repo_dir.rglob("*"):
+            if p.is_file() and not should_skip(p):
+                sample.append((str(p.relative_to(repo_dir)), p.suffix, p.stat().st_size))
+                if len(sample) >= 5:
+                    break
+        print(f"    DEBUG: sample non-skipped files: {sample}")
 
     return count
 
