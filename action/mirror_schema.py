@@ -24,15 +24,14 @@ CREATE TABLE IF NOT EXISTS issues (
     synced_at TEXT               -- when this row was last synced
 );
 
--- Issue comments
+-- Comments (shared by issues and PRs — GitHub uses the same number space)
 CREATE TABLE IF NOT EXISTS issue_comments (
     id INTEGER PRIMARY KEY,
-    issue_number INTEGER NOT NULL,
+    issue_number INTEGER NOT NULL,  -- issue or PR number
     author TEXT,
     body TEXT,
     created_at TEXT,
-    updated_at TEXT,
-    FOREIGN KEY (issue_number) REFERENCES issues(number)
+    updated_at TEXT
 );
 
 -- Pull requests (from GitHub API)
