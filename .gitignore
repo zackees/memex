@@ -11,3 +11,4 @@ __pycache__/
 test_index.db
 test_mirror.db
 mirror.db
+*.png

@@ -23,7 +23,7 @@ export { createSQLiteThread, createHttpBackend };
 export async function openMemexDb(url, options = {}) {
   // Force sync mode: single background worker, no SharedArrayBuffer needed
   const backend = createHttpBackend({
-    maxPageSize: options.maxPageSize || 1024,
+    maxPageSize: options.maxPageSize || 4096,
     timeout: options.timeout || 30000,
     cacheSize: options.cacheSize || 4096,
     backendType: 'sync',
