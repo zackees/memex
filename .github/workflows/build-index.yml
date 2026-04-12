@@ -43,6 +43,10 @@ on:
         description: 'Skip indexing git commits'
         type: boolean
         default: false
+      branch:
+        description: 'Branch to index (default: main)'
+        type: string
+        default: 'main'
 
 permissions:
   contents: read
@@ -78,6 +82,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ steps.target.outputs.repo }}
+          ref: ${{ inputs.branch || 'main' }}
           path: target
           fetch-depth: ${{ inputs.fetch-depth || 500 }}
 
@@ -86,11 +91,11 @@ jobs:
         run: |
           echo "Git checkout failed, falling back to zip download..."
           REPO="${{ steps.target.outputs.repo }}"
-          curl -sSL -o repo.zip "https://github.com/${REPO}/archive/refs/heads/main.zip" \
-            || curl -sSL -o repo.zip "https://github.com/${REPO}/archive/refs/heads/master.zip"
+          BRANCH="${{ inputs.branch || 'main' }}"
+          curl -sSL -o repo.zip "https://github.com/${REPO}/archive/refs/heads/${BRANCH}.zip"
           unzip -q repo.zip
-          # The zip extracts to reponame-branch/, move to target/
-          mv *-main target 2>/dev/null || mv *-master target 2>/dev/null
+          # The zip extracts to RepoName-branch/, move to target/
+          mv *-"${BRANCH}" target
           echo "Fallback checkout complete"
           ls target/ | head -10
 
