@@ -377,6 +377,7 @@ def main() -> None:
     parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""),
                         help="GitHub repo (owner/repo)")
     parser.add_argument("--repo-dir", default=".", help="Path to the cloned repo")
+    parser.add_argument("--subdir", default="", help="Subdirectory to index for files (e.g. 'src'). Empty = whole repo.")
     parser.add_argument("--output", default="index.db", help="Output SQLite database path")
     args = parser.parse_args()
 
@@ -393,7 +394,10 @@ def main() -> None:
     conn = sqlite3.connect(str(output))
     create_tables(conn)
 
-    n_files = index_files(conn, repo_dir)
+    files_dir = repo_dir / args.subdir if args.subdir else repo_dir
+    if args.subdir:
+        print(f"  Indexing files from subdir: {args.subdir}")
+    n_files = index_files(conn, files_dir)
     print(f"  files: {n_files}")
 
     n_commits = index_commits(conn, repo_dir)

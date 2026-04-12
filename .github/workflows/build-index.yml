@@ -7,6 +7,11 @@ on:
         description: 'GitHub repo to index (owner/repo)'
         required: true
         type: string
+      subdir:
+        description: 'Subdirectory to index for files (e.g. "src"). Empty = whole repo.'
+        required: false
+        type: string
+        default: ''
       fetch-depth:
         description: 'Git fetch depth for commit history'
         required: false
@@ -16,6 +21,10 @@ on:
     inputs:
       repo:
         description: 'GitHub repo to index (owner/repo). Leave empty to index this repo.'
+        required: false
+        type: string
+      subdir:
+        description: 'Subdirectory to index for files (e.g. "src"). Empty = whole repo.'
         required: false
         type: string
 
@@ -63,10 +72,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          SUBDIR_ARG=""
+          if [ -n "${{ inputs.subdir }}" ]; then
+            SUBDIR_ARG="--subdir ${{ inputs.subdir }}"
+          fi
           python memex/action/build_index.py \
             --repo "${{ steps.target.outputs.repo }}" \
             --repo-dir target \
-            --output index.db
+            --output index.db \
+            $SUBDIR_ARG
 
       - name: Download official SQLite WASM
         run: |
