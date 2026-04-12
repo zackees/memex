@@ -52,8 +52,13 @@ BARE_FILENAMES = {
 MAX_FILE_SIZE = 512 * 1024  # 512KB
 
 
-def should_skip(path: Path) -> bool:
-    for part in path.parts:
+def should_skip(path: Path, root: Path) -> bool:
+    """Check if a path should be skipped, using only the relative portion."""
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        rel = path
+    for part in rel.parts:
         if part in SKIP_PARTS:
             return True
     return False
@@ -193,10 +198,8 @@ def index_files(conn: sqlite3.Connection, repo_dir: Path) -> int:
         if not path.is_file():
             continue
         total_seen += 1
-        if should_skip(path):
+        if should_skip(path, repo_dir):
             skipped_by_skip += 1
-            if skipped_by_skip <= 3:
-                print(f"    DEBUG SKIP: {path} parts={path.parts}")
             continue
         if not is_text_file(path):
             ext = path.suffix.lower() or "(none)"
@@ -235,7 +238,7 @@ def index_files(conn: sqlite3.Connection, repo_dir: Path) -> int:
         # Show first 5 files that pass should_skip
         sample = []
         for p in repo_dir.rglob("*"):
-            if p.is_file() and not should_skip(p):
+            if p.is_file() and not should_skip(p, repo_dir):
                 sample.append((str(p.relative_to(repo_dir)), p.suffix, p.stat().st_size))
                 if len(sample) >= 5:
                     break
@@ -405,7 +408,7 @@ def index_wiki(conn: sqlite3.Connection, repo: str, repo_dir: Path) -> int:
 
     count = 0
     for path in sorted(wiki_dir.rglob("*.md")):
-        if should_skip(path):
+        if should_skip(path, wiki_dir):
             continue
         rel_path = str(path.relative_to(wiki_dir))
         try:
