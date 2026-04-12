@@ -18,17 +18,23 @@ export default {
     outputModule: true,
   },
   optimization: {
-    splitChunks: {
-      // Only split chunks shared between workers (avoid duplication)
-      // Don't create vendor splits for the main bundle
-      minSize: 50000,
-      cacheGroups: {
-        default: false,
-        defaultVendors: false,
+    splitChunks: false,
+    runtimeChunk: false,
+  },
+  module: {
+    parser: {
+      javascript: {
+        // Inline all dynamic imports — no async chunk splitting
+        dynamicImportMode: 'eager',
       },
     },
   },
   resolve: {
+    alias: {
+      // Stub out unused modules to reduce chunk count
+      [path.resolve(__dirname, 'node_modules/sqlite-wasm-http/deps/dist/sqlite3-opfs-async-proxy.js')]:
+        false,
+    },
     fallback: {},
   },
 };
