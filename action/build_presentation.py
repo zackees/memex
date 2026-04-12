@@ -151,12 +151,87 @@ CREATE TABLE IF NOT EXISTS cross_refs (
 
 CREATE INDEX IF NOT EXISTS idx_xref_target ON cross_refs(target_type, target_number);
 
+-- Author identity resolution (email -> GitHub username)
+CREATE TABLE IF NOT EXISTS author_map (
+    email TEXT PRIMARY KEY,
+    github_user TEXT NOT NULL
+);
+
 -- Build metadata
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT
 );
 """
+
+
+# ---------------------------------------------------------------------------
+# Identity resolution: email -> GitHub username
+# ---------------------------------------------------------------------------
+
+NOREPLY_RE = re.compile(r'(?:\d+\+)?(.+)@users\.noreply\.github\.com')
+
+
+def build_author_map(mirror: sqlite3.Connection) -> dict[str, str]:
+    """Build email -> GitHub username mapping from mirror data.
+
+    Sources (in priority order):
+    1. GitHub noreply emails: 12345+username@users.noreply.github.com
+    2. PR merge commit cross-reference: commit email -> PR author
+    3. Issue/PR author names used as fallback identity
+    """
+    email_to_gh: dict[str, str] = {}
+
+    # 1. Noreply email pattern
+    for row in mirror.execute(
+        "SELECT DISTINCT author_email FROM commits WHERE author_email LIKE '%@users.noreply.github.com'"
+    ):
+        m = NOREPLY_RE.match(row[0])
+        if m:
+            email_to_gh[row[0]] = m.group(1)
+
+    # 2. PR merge commit -> PR author
+    for row in mirror.execute("""
+        SELECT c.author_email, p.author
+        FROM commits c
+        JOIN pull_requests p ON c.sha = p.merge_commit_sha
+        WHERE p.author IS NOT NULL AND p.author != ''
+        GROUP BY c.author_email
+    """):
+        if row[0] not in email_to_gh:
+            email_to_gh[row[0]] = row[1]
+
+    # 3. Match commit author names to known GitHub usernames from issues/PRs
+    # Build set of known GitHub usernames (lowercase -> canonical)
+    gh_usernames: dict[str, str] = {}
+    for row in mirror.execute("SELECT DISTINCT author FROM issues WHERE author IS NOT NULL AND author != ''"):
+        gh_usernames[row[0].lower()] = row[0]
+    for row in mirror.execute("SELECT DISTINCT author FROM pull_requests WHERE author IS NOT NULL AND author != ''"):
+        gh_usernames[row[0].lower()] = row[0]
+
+    # For unmapped emails, check if the git author name matches a GitHub username
+    for row in mirror.execute("""
+        SELECT DISTINCT author_email, author_name FROM commits
+        WHERE author_email NOT IN ({})
+    """.format(",".join("?" * len(email_to_gh))), list(email_to_gh.keys()) if email_to_gh else [""]):
+        name_lower = (row[1] or "").lower()
+        if name_lower in gh_usernames:
+            email_to_gh[row[0]] = gh_usernames[name_lower]
+
+    # 4. Group emails that resolve to the same GitHub user
+    # Build reverse map: github_user -> [emails]
+    gh_to_emails: dict[str, list[str]] = {}
+    for email, gh in email_to_gh.items():
+        gh_to_emails.setdefault(gh, []).append(email)
+
+    return email_to_gh
+
+
+def resolve_commit_author(author_name: str, author_email: str, author_map: dict[str, str]) -> str:
+    """Resolve a commit author to their GitHub username if possible."""
+    if author_email in author_map:
+        return author_map[author_email]
+    return author_name or ""
 
 
 # ---------------------------------------------------------------------------
@@ -245,15 +320,18 @@ def build_items(mirror: sqlite3.Connection, pres: sqlite3.Connection) -> int:
     return count
 
 
-def build_commits(mirror: sqlite3.Connection, pres: sqlite3.Connection) -> int:
-    """Copy commits from mirror to presentation DB."""
+def build_commits(mirror: sqlite3.Connection, pres: sqlite3.Connection,
+                  author_map: dict[str, str]) -> int:
+    """Copy commits from mirror to presentation DB with resolved authors."""
     count = 0
     for row in mirror.execute("""
-        SELECT sha, author_name, author_date, message,
+        SELECT sha, author_name, author_email, author_date, message,
                files_changed, additions, deletions, file_stats
         FROM commits
     """):
-        sha, author, date, message, n_files, additions, deletions, file_stats_json = row
+        sha, author_name, author_email, date, message, n_files, additions, deletions, file_stats_json = row
+
+        author = resolve_commit_author(author_name or "", author_email or "", author_map)
 
         # Split message into subject + body
         parts = (message or "").split("\n", 1)
@@ -425,11 +503,20 @@ def main() -> None:
     pres = sqlite3.connect(str(output))
     pres.executescript(PRESENTATION_SCHEMA)
 
+    # Build author identity map
+    author_map = build_author_map(mirror)
+    # Persist to presentation DB (never re-resolve)
+    for email, gh_user in author_map.items():
+        pres.execute("INSERT OR IGNORE INTO author_map (email, github_user) VALUES (?, ?)",
+                     (email, gh_user))
+    pres.commit()
+    print(f"  Author identities resolved: {len(author_map)} emails mapped")
+
     # Build all tables
     n_items = build_items(mirror, pres)
     print(f"  Items (issues + PRs): {n_items}")
 
-    n_commits = build_commits(mirror, pres)
+    n_commits = build_commits(mirror, pres, author_map)
     print(f"  Commits: {n_commits}")
 
     n_comments = build_comments(mirror, pres)
