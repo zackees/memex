@@ -110,9 +110,13 @@ details .detail-content p:last-child{margin-bottom:0}
 
   <div class="query-buttons">
     <button class="query-btn" data-query="SELECT key, value FROM meta">Build metadata</button>
-    <button class="query-btn" data-query="SELECT source_type, path, title FROM search_porter WHERE search_porter MATCH 'pixel' LIMIT 10">Porter: "pixel"</button>
-    <button class="query-btn" data-query="SELECT source_type, path, title, bm25(search_porter, 1.0, 1.0, 5.0, 1.0, 1.0) as rank FROM search_porter WHERE search_porter MATCH 'error' ORDER BY rank LIMIT 10">Porter+BM25: "error"</button>
-    <button class="query-btn" data-query="SELECT id, source_type, path, title FROM chunks LIMIT 20">First 20 chunks</button>
+    <button class="query-btn" data-query="SELECT entity_type, number, title, state, author FROM items ORDER BY updated_at DESC LIMIT 20">Recent items</button>
+    <button class="query-btn" data-query="SELECT i.number, i.entity_type, i.title, i.state, bm25(items_fts, 10.0, 1.0, 5.0, 3.0) as rank FROM items_fts f JOIN items i ON i.id = f.rowid WHERE items_fts MATCH 'ESP32' ORDER BY rank LIMIT 10">Search: "ESP32"</button>
+    <button class="query-btn" data-query="SELECT i.number, i.title, snippet(items_fts, 1, '**', '**', '...', 32) as snippet FROM items_fts f JOIN items i ON i.id = f.rowid WHERE items_fts MATCH 'crash OR panic' ORDER BY bm25(items_fts, 10.0, 1.0, 5.0, 3.0) LIMIT 10">Search: "crash"</button>
+    <button class="query-btn" data-query="SELECT author, COUNT(*) as commits, SUM(additions) as adds, SUM(deletions) as dels FROM commits GROUP BY author ORDER BY commits DESC LIMIT 10">Top committers</button>
+    <button class="query-btn" data-query="SELECT author, COUNT(*) as n, SUM(CASE WHEN state='open' THEN 1 ELSE 0 END) as open, SUM(CASE WHEN state='closed' THEN 1 ELSE 0 END) as closed FROM items WHERE entity_type='issue' GROUP BY author ORDER BY n DESC LIMIT 10">Top reporters</button>
+    <button class="query-btn" data-query="SELECT number, title, comment_count, state FROM items WHERE entity_type='issue' ORDER BY comment_count DESC LIMIT 10">Most discussed</button>
+    <button class="query-btn" data-query="SELECT email, github_user FROM author_map ORDER BY github_user">Author map</button>
     <button class="query-btn" data-query="SELECT name, type FROM sqlite_master ORDER BY type, name">Schema</button>
   </div>
 
@@ -237,7 +241,7 @@ async function runCustom() {
     const m = {}; for (const r of meta.rows) m[r[0]] = r[1];
     const tables = await query(db, "SELECT name FROM sqlite_master WHERE type IN ('table','view') ORDER BY name");
     statusEl.className = 'status ready';
-    statusEl.textContent = 'SQLite (HTTP range requests) \u2022 ' + (m.total_chunks || '?') + ' chunks \u2022 ' + tables.rows.length + ' tables';
+    statusEl.textContent = 'SQLite (HTTP range requests) \u2022 ' + (m.total_items || '?') + ' items \u2022 ' + (m.total_commits || '?') + ' commits \u2022 ' + tables.rows.length + ' tables';
     if (m.repo) { const t = document.getElementById('repo-title'); if (t) { t.textContent = m.repo; document.title = m.repo + ' \u2014 Memex'; } }
   } catch (err) {
     statusEl.className = 'status error';
