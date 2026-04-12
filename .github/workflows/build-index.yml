@@ -27,6 +27,22 @@ on:
         description: 'Subdirectory to index for files (e.g. "src"). Empty = whole repo.'
         required: false
         type: string
+      skip-issues:
+        description: 'Skip indexing GitHub issues'
+        type: boolean
+        default: false
+      skip-prs:
+        description: 'Skip indexing GitHub PRs'
+        type: boolean
+        default: false
+      skip-wiki:
+        description: 'Skip indexing wiki'
+        type: boolean
+        default: false
+      skip-commits:
+        description: 'Skip indexing git commits'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -72,15 +88,27 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          SUBDIR_ARG=""
+          EXTRA_ARGS=""
           if [ -n "${{ inputs.subdir }}" ]; then
-            SUBDIR_ARG="--subdir ${{ inputs.subdir }}"
+            EXTRA_ARGS="$EXTRA_ARGS --subdir ${{ inputs.subdir }}"
+          fi
+          if [ "${{ inputs.skip-issues }}" = "true" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --no-issues"
+          fi
+          if [ "${{ inputs.skip-prs }}" = "true" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --no-prs"
+          fi
+          if [ "${{ inputs.skip-wiki }}" = "true" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --no-wiki"
+          fi
+          if [ "${{ inputs.skip-commits }}" = "true" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --no-commits"
           fi
           python memex/action/build_index.py \
             --repo "${{ steps.target.outputs.repo }}" \
             --repo-dir target \
             --output index.db \
-            $SUBDIR_ARG
+            $EXTRA_ARGS
 
       - name: Download official SQLite WASM
         run: |

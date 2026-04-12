@@ -431,6 +431,10 @@ def main() -> None:
     parser.add_argument("--repo-dir", default=".", help="Path to the cloned repo")
     parser.add_argument("--subdir", default="", help="Subdirectory to index for files (e.g. 'src'). Empty = whole repo.")
     parser.add_argument("--output", default="index.db", help="Output SQLite database path")
+    parser.add_argument("--no-issues", action="store_true", help="Skip indexing GitHub issues")
+    parser.add_argument("--no-prs", action="store_true", help="Skip indexing GitHub pull requests")
+    parser.add_argument("--no-wiki", action="store_true", help="Skip indexing wiki pages")
+    parser.add_argument("--no-commits", action="store_true", help="Skip indexing git commits")
     args = parser.parse_args()
 
     repo_dir = Path(args.repo_dir).resolve()
@@ -452,21 +456,34 @@ def main() -> None:
     n_files = index_files(conn, files_dir)
     print(f"  files: {n_files}")
 
-    n_commits = index_commits(conn, repo_dir)
-    print(f"  commits: {n_commits}")
+    n_commits = 0
+    if not args.no_commits:
+        n_commits = index_commits(conn, repo_dir)
+        print(f"  commits: {n_commits}")
+    else:
+        print("  commits: skipped")
 
     n_issues = 0
     n_prs = 0
     n_wiki = 0
     if args.repo:
-        n_issues = index_issues(conn, args.repo)
-        print(f"  issues: {n_issues}")
+        if not args.no_issues:
+            n_issues = index_issues(conn, args.repo)
+            print(f"  issues: {n_issues}")
+        else:
+            print("  issues: skipped")
 
-        n_prs = index_pull_requests(conn, args.repo)
-        print(f"  pull_requests: {n_prs}")
+        if not args.no_prs:
+            n_prs = index_pull_requests(conn, args.repo)
+            print(f"  pull_requests: {n_prs}")
+        else:
+            print("  pull_requests: skipped")
 
-        n_wiki = index_wiki(conn, args.repo, repo_dir)
-        print(f"  wiki: {n_wiki}")
+        if not args.no_wiki:
+            n_wiki = index_wiki(conn, args.repo, repo_dir)
+            print(f"  wiki: {n_wiki}")
+        else:
+            print("  wiki: skipped")
     else:
         print("  (no --repo, skipping GitHub API sources)")
 
