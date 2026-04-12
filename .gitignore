@@ -1,0 +1,10 @@
+# Downloaded databases (too large to commit)
+pages/index.db
+
+# Test files
+serve.py
+test_*.py
+pages/test*.html
+
+# License txt from webpack
+*.LICENSE.txt
