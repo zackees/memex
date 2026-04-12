@@ -1,0 +1,1 @@
+export const __webpack_esm_id__=168;export const __webpack_esm_ids__=[168];export const __webpack_esm_modules__={168(_,e,s){_.exports=s.p+"sqlite3.wasm"}};
