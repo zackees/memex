@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Memex — AI Memory Index</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="header">
+  <h1 id="repo-title">Memex</h1>
+  <p class="subtitle">Searchable FTS5 index — code, issues, wiki, and git history.</p>
+  <div class="badges">
+    <span class="badge">FTS5 trigram</span>
+    <span class="badge">FTS5 porter</span>
+    <span class="badge">BM25 ranking</span>
+    <span class="badge blue">HTTP range requests</span>
+  </div>
+  <a href="index.db" download class="download-link">Download index.db</a>
+</div>
+
+<!-- ===== QUERY DEMO (hero) ===== -->
+<div id="query-section">
+  <h2>Live Query Demo</h2>
+  <div id="status" class="status loading">Loading SQLite WASM + database...</div>
+
+  <div class="query-buttons">
+    <button class="query-btn" data-query="SELECT source_type, COUNT(*) as count FROM chunks GROUP BY source_type ORDER BY count DESC">Chunk counts</button>
+    <button class="query-btn" data-query="SELECT source_type, path, title FROM search_trigram WHERE search_trigram MATCH '&quot;skill&quot;' LIMIT 10">Trigram: "skill"</button>
+    <button class="query-btn" data-query="SELECT source_type, path, title FROM search_trigram WHERE search_trigram MATCH '&quot;sqlite&quot;' LIMIT 10">Trigram: "sqlite"</button>
+    <button class="query-btn" data-query="SELECT source_type, path, title, bm25(search_porter, 1.0, 1.0, 5.0, 1.0, 1.0) as rank FROM search_porter WHERE search_porter MATCH 'search index' ORDER BY rank LIMIT 10">Porter+BM25: "search index"</button>
+    <button class="query-btn" data-query="SELECT source_type, path, title, bm25(search_porter, 1.0, 1.0, 5.0, 1.0, 1.0) as rank FROM search_porter WHERE search_porter MATCH 'yaml category' ORDER BY rank LIMIT 10">Porter+BM25: "yaml category"</button>
+    <button class="query-btn" data-query="SELECT source_type, path, title, snippet(search_porter, 3, '**', '**', '...', 15) as snippet FROM search_porter WHERE search_porter MATCH 'memory' LIMIT 5">Snippet: "memory"</button>
+    <button class="query-btn" data-query="SELECT path, json_extract(metadata, '$.sha') as sha, json_extract(metadata, '$.author') as author, title FROM chunks WHERE source_type = 'commit'">Git commits</button>
+    <button class="query-btn" data-query="SELECT path, title, json_extract(metadata, '$.state') as state, json_extract(metadata, '$.labels') as labels FROM chunks WHERE source_type = 'issue'">Issues</button>
+    <button class="query-btn" data-query="SELECT key, value FROM meta">Build metadata</button>
+  </div>
+
+  <div class="custom-query">
+    <input type="text" id="custom-sql" placeholder="SELECT * FROM chunks LIMIT 5" />
+    <button id="run-btn">Run</button>
+  </div>
+
+  <div class="query-display" id="query-display" style="display:none">
+    <pre><code id="query-text"></code></pre>
+    <div class="query-actions">
+      <button class="action-btn" id="copy-btn">Copy SQL</button>
+    </div>
+  </div>
+
+  <div id="results"></div>
+</div>
+
+<!-- ===== EXPANDABLE DETAILS ===== -->
+
+<details>
+  <summary>Schema</summary>
+  <div class="detail-content">
+    <pre><code>-- Base data table
+CREATE TABLE chunks (
+    id INTEGER PRIMARY KEY,
+    source_type TEXT,  -- 'file', 'issue', 'pr', 'commit', 'wiki'
+    path TEXT,         -- file path, issue number, etc.
+    title TEXT,        -- filename, issue title, commit subject
+    body TEXT,         -- content
+    metadata TEXT      -- JSON blob
+);
+
+-- FTS5 trigram index (substring/fuzzy matching)
+CREATE VIRTUAL TABLE search_trigram USING fts5(
+    source_type, path, title, body, metadata,
+    content=chunks, content_rowid=id,
+    tokenize='trigram'
+);
+
+-- FTS5 porter index (stemmed whole-word search)
+CREATE VIRTUAL TABLE search_porter USING fts5(
+    source_type, path, title, body, metadata,
+    content=chunks, content_rowid=id,
+    tokenize='porter unicode61'
+);</code></pre>
+  </div>
+</details>
+
+<details>
+  <summary>HTTP range request access</summary>
+  <div class="detail-content">
+    <p>The database is served with <code>Accept-Ranges: bytes</code>, enabling sparse access. Clients can query without downloading the entire file.</p>
+    <pre><code># Verify range request support
+curl -I https://zackees.github.io/self/index.db | grep -i accept-ranges
+# Accept-Ranges: bytes
+
+# Fetch just the first 1KB (SQLite header + first page)
+curl -H "Range: bytes=0-1023" -o header.bin https://zackees.github.io/self/index.db</code></pre>
+    <h3>Compatible libraries</h3>
+    <ul>
+      <li><a href="https://github.com/mmomtchev/sqlite-wasm-http">sqlite-wasm-http</a> — Browser WASM, HTTP range requests + FTS5 (requires bundler)</li>
+      <li><a href="https://github.com/phiresky/sql.js-httpvfs">sql.js-httpvfs</a> — Browser WASM, HTTP range requests, FTS3 only</li>
+      <li><a href="https://sqlite.org/wasm">Official SQLite WASM</a> — FTS5 built-in (used on this page)</li>
+      <li><code>sqlite-vfs-http</code> — Rust crate for native HTTP range request VFS</li>
+    </ul>
+  </div>
+</details>
+
+<details>
+  <summary>Access from Rust</summary>
+  <div class="detail-content">
+    <p>Use <code>rusqlite</code> with an HTTP VFS crate for sparse remote access, or download the DB for local queries.</p>
+    <pre><code>// Cargo.toml
+// rusqlite = { version = "0.31", features = ["bundled", "fts5"] }
+// sqlite-vfs-http = "0.1"
+
+use rusqlite::Connection;
+use sqlite_vfs_http::{register_http_vfs, HTTP_VFS};
+
+register_http_vfs();
+let conn = Connection::open_with_flags_and_vfs(
+    "https://zackees.github.io/self/index.db",
+    OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    HTTP_VFS,
+)?;
+
+// FTS5 trigram fuzzy search with BM25 ranking
+let mut stmt = conn.prepare(
+    "SELECT path, title, bm25(search_trigram) as rank
+     FROM search_trigram WHERE search_trigram MATCH '\"claud\"'
+     ORDER BY rank LIMIT 10"
+)?;</code></pre>
+  </div>
+</details>
+
+<details>
+  <summary>Access from browser (WASM)</summary>
+  <div class="detail-content">
+    <p>This page uses the <strong>official SQLite WASM</strong> build (SQLite 3.53.0, FTS5 + trigram included) running in a background Web Worker. The DB is fetched once on load (~300KB), then all queries run locally in WASM.</p>
+    <p>For large databases, use <a href="https://github.com/mmomtchev/sqlite-wasm-http">sqlite-wasm-http</a> which fetches only the pages needed per query via HTTP range requests. Requires a bundler (webpack/vite).</p>
+  </div>
+</details>
+
+<details>
+  <summary>Access from Node.js / AI agents</summary>
+  <div class="detail-content">
+    <p>AI agents running in Node.js can query the index directly using <code>better-sqlite3</code> (native) or <code>sql.js</code> (WASM). Download the DB once, then query locally.</p>
+
+    <h3>Option 1: better-sqlite3 (native, fastest)</h3>
+    <pre><code>// npm install better-sqlite3
+const Database = require('better-sqlite3');
+const fs = require('fs');
+
+// Download once
+const resp = await fetch('https://zackees.github.io/self/index.db');
+fs.writeFileSync('index.db', Buffer.from(await resp.arrayBuffer()));
+
+const db = new Database('index.db', { readonly: true });
+
+// FTS5 trigram fuzzy search
+const results = db.prepare(`
+  SELECT source_type, path, title, bm25(search_trigram) as rank
+  FROM search_trigram WHERE search_trigram MATCH '"auth"'
+  ORDER BY rank LIMIT 10
+`).all();
+
+// Porter stemmed search
+const docs = db.prepare(`
+  SELECT path, snippet(search_porter, 3, '**', '**', '...', 20) as snip
+  FROM search_porter WHERE search_porter MATCH 'error handling'
+  LIMIT 5
+`).all();</code></pre>
+
+    <h3>Option 2: sql.js (WASM, no native deps)</h3>
+    <pre><code>// npm install sql.js
+const initSqlJs = require('sql.js');
+
+const SQL = await initSqlJs();
+const resp = await fetch('https://zackees.github.io/self/index.db');
+const buf = new Uint8Array(await resp.arrayBuffer());
+const db = new SQL.Database(buf);
+
+// Note: sql.js default build has FTS3 only.
+// Use better-sqlite3 for FTS5 support in Node.</code></pre>
+
+    <h3>Option 3: Python</h3>
+    <pre><code>import sqlite3, urllib.request
+
+urllib.request.urlretrieve(
+    'https://zackees.github.io/self/index.db', 'index.db')
+
+conn = sqlite3.connect('index.db')
+rows = conn.execute("""
+    SELECT source_type, path, title, bm25(search_trigram) as rank
+    FROM search_trigram WHERE search_trigram MATCH '"skill"'
+    ORDER BY rank LIMIT 10
+""").fetchall()</code></pre>
+
+    <h3>Agent integration pattern</h3>
+    <p>For AI agents that need RAG over this codebase:</p>
+    <ul>
+      <li>Download <code>index.db</code> once at startup (or cache it)</li>
+      <li>Use <code>search_trigram</code> for fuzzy substring matches (typos, partial names)</li>
+      <li>Use <code>search_porter</code> for natural language queries ("error handling", "authentication")</li>
+      <li>Use <code>bm25()</code> to rank results by relevance</li>
+      <li>Read <code>metadata</code> JSON for file paths, line numbers, issue labels, commit SHAs</li>
+    </ul>
+  </div>
+</details>
+
+<details>
+  <summary>Rebuilding the index</summary>
+  <div class="detail-content">
+    <p>The index is rebuilt automatically on every push to <code>main</code> via <a href="https://github.com/zackees/self/actions">GitHub Actions</a>. It can also be triggered manually via <code>workflow_dispatch</code>.</p>
+    <p>Sources indexed: repository files, git commits (last 200), GitHub issues + comments, pull requests + review comments, and wiki pages.</p>
+    <p>The build script is at <a href="https://github.com/zackees/self/blob/main/scripts/build_index.py"><code>scripts/build_index.py</code></a>.</p>
+  </div>
+</details>
+
+<script src="app.js"></script>
+
+</body>
+</html>

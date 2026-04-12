@@ -1,0 +1,106 @@
+name: Memex Build Index
+
+on:
+  workflow_call:
+    inputs:
+      repo:
+        description: 'GitHub repo to index (owner/repo)'
+        required: true
+        type: string
+      fetch-depth:
+        description: 'Git fetch depth for commit history'
+        required: false
+        type: number
+        default: 500
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: 'GitHub repo to index (owner/repo). Leave empty to index this repo.'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout memex action
+        uses: actions/checkout@v4
+        with:
+          repository: zackees/memex
+          path: memex
+
+      - name: Determine target repo
+        id: target
+        run: |
+          REPO="${{ inputs.repo || github.repository }}"
+          echo "repo=${REPO}" >> "$GITHUB_OUTPUT"
+          echo "Target repo: ${REPO}"
+
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.target.outputs.repo }}
+          path: target
+          fetch-depth: ${{ inputs.fetch-depth || 500 }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build index
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python memex/action/build_index.py \
+            --repo "${{ steps.target.outputs.repo }}" \
+            --repo-dir target \
+            --output index.db
+
+      - name: Download official SQLite WASM
+        run: |
+          DL_PATH=$(curl -sS https://sqlite.org/download.html | grep -oP '\d{4}/sqlite-wasm-\d+\.zip' | head -1)
+          echo "Downloading: https://sqlite.org/${DL_PATH}"
+          curl -sSL -o sqlite-wasm.zip "https://sqlite.org/${DL_PATH}"
+          unzip -q sqlite-wasm.zip
+
+      - name: Prepare Pages artifact
+        run: |
+          mkdir -p _site/jswasm
+          cp index.db _site/
+          cp memex/pages/index.html _site/
+          cp memex/pages/style.css _site/
+          cp memex/pages/app.js _site/
+          JSWASM_DIR=$(find . -type d -name jswasm | head -1)
+          cp "${JSWASM_DIR}/sqlite3.js" _site/jswasm/
+          cp "${JSWASM_DIR}/sqlite3.wasm" _site/jswasm/
+          echo "=== _site ==="
+          find _site -type f | sort
+          du -sh _site/*
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
