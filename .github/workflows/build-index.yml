@@ -73,11 +73,26 @@ jobs:
           echo "Target repo: ${REPO}"
 
       - name: Checkout target repo
+        id: checkout-target
+        continue-on-error: true
         uses: actions/checkout@v4
         with:
           repository: ${{ steps.target.outputs.repo }}
           path: target
           fetch-depth: ${{ inputs.fetch-depth || 500 }}
+
+      - name: Fallback - download repo zip
+        if: steps.checkout-target.outcome == 'failure'
+        run: |
+          echo "Git checkout failed, falling back to zip download..."
+          REPO="${{ steps.target.outputs.repo }}"
+          curl -sSL -o repo.zip "https://github.com/${REPO}/archive/refs/heads/main.zip" \
+            || curl -sSL -o repo.zip "https://github.com/${REPO}/archive/refs/heads/master.zip"
+          unzip -q repo.zip
+          # The zip extracts to reponame-branch/, move to target/
+          mv *-main target 2>/dev/null || mv *-master target 2>/dev/null
+          echo "Fallback checkout complete"
+          ls target/ | head -10
 
       - name: Set up Python
         uses: actions/setup-python@v5
