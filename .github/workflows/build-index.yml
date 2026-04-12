@@ -134,13 +134,13 @@ jobs:
         run: |
           mkdir -p _site
           cp index.db _site/
-          cp memex/pages/index.html _site/
-          cp memex/pages/style.css _site/
-          # Pre-built webpack bundles (sqlite-wasm-http with HTTP range requests)
-          cp memex/pages/bundle.js _site/
-          cp memex/pages/memex-*.js _site/
-          cp memex/pages/*.wasm _site/
-          # Also deploy dist/ bundles for downstream consumers
+          # Deploy demo.html as the index page
+          cp memex/dist/wasm/demo.html _site/index.html
+          # Pre-built webpack bundles (sqlite-wasm-http, wasm-opt -Oz)
+          cp memex/dist/wasm/memex.js _site/
+          cp memex/dist/wasm/memex-*.js _site/
+          cp memex/dist/wasm/sqlite3.wasm _site/
+          # Also deploy both dist bundles for downstream consumers
           cp -r memex/dist _site/dist
           echo "=== _site ==="
           find _site -type f | sort

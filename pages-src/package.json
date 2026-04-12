@@ -4,9 +4,9 @@
   "description": "SQLite HTTP range-request client for memex databases",
   "type": "module",
   "scripts": {
-    "build": "npm run build:browser && npm run build:node && npm run build:demo",
-    "build:browser": "webpack --config webpack.browser.config.js",
-    "build:node": "webpack --config webpack.node.config.js",
+    "build": "npm run build:wasm && npm run build:js && npm run build:demo",
+    "build:wasm": "webpack --config webpack.browser.config.js && cp demo.html ../dist/wasm/demo.html",
+    "build:js": "webpack --config webpack.node.config.js && cp demo.html ../dist/js/demo.html",
     "build:demo": "webpack --config webpack.config.js"
   },
   "license": "ISC",

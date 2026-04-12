@@ -1,9 +1,8 @@
 /**
  * Memex — SQLite HTTP range-request client library.
  *
- * Two ways to use:
- *   1. Quick: openMemexDb(url) → { db, backend, close() }
- *   2. Low-level: import { createSQLiteThread, createHttpBackend } from the bundle
+ * Uses a single background Web Worker (sync mode) for all queries.
+ * Only fetches the database pages needed per query via HTTP range requests.
  *
  * @module memex
  */
@@ -13,7 +12,6 @@ export { createSQLiteThread, createHttpBackend };
 
 /**
  * Open a remote SQLite database using HTTP range requests.
- * Only fetches the pages needed per query — no full download.
  *
  * @param {string} url - Full URL to the .db file
  * @param {object} [options]
@@ -23,10 +21,12 @@ export { createSQLiteThread, createHttpBackend };
  * @returns {Promise<{db: Function, backend: object, close: Function}>}
  */
 export async function openMemexDb(url, options = {}) {
+  // Force sync mode: single background worker, no SharedArrayBuffer needed
   const backend = createHttpBackend({
     maxPageSize: options.maxPageSize || 1024,
     timeout: options.timeout || 30000,
     cacheSize: options.cacheSize || 4096,
+    backendType: 'sync',
   });
 
   const db = await createSQLiteThread({ http: backend });

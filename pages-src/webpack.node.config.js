@@ -9,7 +9,7 @@ export default {
   output: {
     filename: 'memex.js',
     chunkFilename: 'memex-[name].js',
-    path: path.resolve(__dirname, '../dist/node'),
+    path: path.resolve(__dirname, '../dist/js'),
     library: { type: 'module' },
     clean: true,
   },
