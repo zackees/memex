@@ -1,1 +1,0 @@
-"use strict";(self.webpackChunkmemex=self.webpackChunkmemex||[]).push([[168],{168(e,s,m){e.exports=m.p+"sqlite3.wasm"}}]);
