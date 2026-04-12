@@ -133,8 +133,7 @@ let mut stmt = conn.prepare(
 <details>
   <summary>Access from browser (WASM)</summary>
   <div class="detail-content">
-    <p>This page uses the <strong>official SQLite WASM</strong> build (SQLite 3.53.0, FTS5 + trigram included) running in a background Web Worker. The DB is fetched once on load (~300KB), then all queries run locally in WASM.</p>
-    <p>For large databases, use <a href="https://github.com/mmomtchev/sqlite-wasm-http">sqlite-wasm-http</a> which fetches only the pages needed per query via HTTP range requests. Requires a bundler (webpack/vite).</p>
+    <p>This page uses <strong>sqlite-wasm-http</strong> (SQLite WASM with FTS5 + trigram) running in a background Web Worker. Only the database pages needed per query are fetched via HTTP range requests &mdash; typically &lt;1% of the total DB size.</p>
   </div>
 </details>
 
@@ -214,7 +213,7 @@ rows = conn.execute("""
   </div>
 </details>
 
-<script src="app.js"></script>
+<script src="bundle.js"></script>
 
 </body>
 </html>

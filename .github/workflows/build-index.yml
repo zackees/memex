@@ -130,23 +130,18 @@ jobs:
             --output index.db \
             $EXTRA_ARGS
 
-      - name: Download official SQLite WASM
-        run: |
-          DL_PATH=$(curl -sS https://sqlite.org/download.html | grep -oP '\d{4}/sqlite-wasm-\d+\.zip' | head -1)
-          echo "Downloading: https://sqlite.org/${DL_PATH}"
-          curl -sSL -o sqlite-wasm.zip "https://sqlite.org/${DL_PATH}"
-          unzip -q sqlite-wasm.zip
-
       - name: Prepare Pages artifact
         run: |
-          mkdir -p _site/jswasm
+          mkdir -p _site
           cp index.db _site/
           cp memex/pages/index.html _site/
           cp memex/pages/style.css _site/
-          cp memex/pages/app.js _site/
-          JSWASM_DIR=$(find . -type d -name jswasm | head -1)
-          cp "${JSWASM_DIR}/sqlite3.js" _site/jswasm/
-          cp "${JSWASM_DIR}/sqlite3.wasm" _site/jswasm/
+          # Pre-built webpack bundles (sqlite-wasm-http with HTTP range requests)
+          cp memex/pages/bundle.js _site/
+          cp memex/pages/*.bundle.js _site/
+          cp memex/pages/*.wasm _site/
+          # Also deploy dist/ bundles for downstream consumers
+          cp -r memex/dist _site/dist
           echo "=== _site ==="
           find _site -type f | sort
           du -sh _site/*
