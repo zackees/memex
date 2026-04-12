@@ -15,6 +15,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -281,16 +282,42 @@ def gh_api(endpoint: str, paginate: bool = True) -> Any:
         return None
 
 
+def _fetch_issue_comments(repo: str, number: int) -> tuple[int, str]:
+    """Fetch comments for a single issue. Returns (number, comments_text)."""
+    comments = gh_api(f"repos/{repo}/issues/{number}/comments?per_page=100")
+    if not comments or not isinstance(comments, list):
+        return (number, "")
+    parts: list[str] = []
+    for c in comments:
+        c_body = c.get("body", "") if isinstance(c, dict) else ""
+        if c_body:
+            c_author = c.get("user", {}).get("login", "unknown") if isinstance(c, dict) else "unknown"
+            parts.append(f"\n\n---\n**{c_author}**: {c_body}")
+    return (number, "".join(parts))
+
+
 def index_issues(conn: sqlite3.Connection, repo: str) -> int:
     issues = gh_api(f"repos/{repo}/issues?state=all&per_page=100")
     if not issues or not isinstance(issues, list):
         return 0
 
-    count = 0
-    for issue in issues:
-        if "pull_request" in issue:
-            continue
+    # Filter out PRs (they appear in issues API)
+    real_issues: list[dict[str, Any]] = [i for i in issues if "pull_request" not in i and isinstance(i, dict)]
 
+    # Fetch comments in parallel for issues that have them
+    issues_with_comments = [i for i in real_issues if i.get("comments", 0) > 0]
+    comment_map: dict[int, str] = {}
+    if issues_with_comments:
+        print(f"    Fetching comments for {len(issues_with_comments)} issues (threadpool)...")
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {pool.submit(_fetch_issue_comments, repo, i["number"]): i["number"] for i in issues_with_comments}
+            for future in as_completed(futures):
+                num, text = future.result()
+                if text:
+                    comment_map[num] = text
+
+    count = 0
+    for issue in real_issues:
         labels = [label.get("name", "") for label in issue.get("labels", []) if isinstance(label, dict)]
         metadata = json.dumps({
             "number": issue["number"],
@@ -302,18 +329,25 @@ def index_issues(conn: sqlite3.Connection, repo: str) -> int:
             "comments_count": issue.get("comments", 0),
         })
 
-        body_text = issue.get("body") or ""
-        comments = gh_api(f"repos/{repo}/issues/{issue['number']}/comments?per_page=100")
-        if comments and isinstance(comments, list):
-            for c in comments:
-                c_body = c.get("body", "")
-                if c_body:
-                    c_author = c.get("user", {}).get("login", "unknown")
-                    body_text += f"\n\n---\n**{c_author}**: {c_body}"
-
+        body_text = (issue.get("body") or "") + comment_map.get(issue["number"], "")
         insert_chunk(conn, "issue", f"#{issue['number']}", issue.get("title", ""), body_text, metadata)
         count += 1
     return count
+
+
+def _fetch_pr_comments(repo: str, number: int) -> tuple[int, str]:
+    """Fetch review comments for a single PR. Returns (number, comments_text)."""
+    comments = gh_api(f"repos/{repo}/pulls/{number}/comments?per_page=100")
+    if not comments or not isinstance(comments, list):
+        return (number, "")
+    parts: list[str] = []
+    for c in comments:
+        c_body = c.get("body", "") if isinstance(c, dict) else ""
+        if c_body:
+            c_author = c.get("user", {}).get("login", "unknown") if isinstance(c, dict) else "unknown"
+            c_path = c.get("path", "") if isinstance(c, dict) else ""
+            parts.append(f"\n\n---\n**{c_author}** on `{c_path}`: {c_body}")
+    return (number, "".join(parts))
 
 
 def index_pull_requests(conn: sqlite3.Connection, repo: str) -> int:
@@ -321,8 +355,22 @@ def index_pull_requests(conn: sqlite3.Connection, repo: str) -> int:
     if not prs or not isinstance(prs, list):
         return 0
 
+    pr_list: list[dict[str, Any]] = [p for p in prs if isinstance(p, dict)]
+
+    # Fetch review comments in parallel
+    prs_with_comments = [p for p in pr_list if p.get("review_comments", 0) > 0]
+    comment_map: dict[int, str] = {}
+    if prs_with_comments:
+        print(f"    Fetching comments for {len(prs_with_comments)} PRs (threadpool)...")
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {pool.submit(_fetch_pr_comments, repo, p["number"]): p["number"] for p in prs_with_comments}
+            for future in as_completed(futures):
+                num, text = future.result()
+                if text:
+                    comment_map[num] = text
+
     count = 0
-    for pr in prs:
+    for pr in pr_list:
         metadata = json.dumps({
             "number": pr["number"],
             "state": pr["state"],
@@ -333,16 +381,7 @@ def index_pull_requests(conn: sqlite3.Connection, repo: str) -> int:
             "head": pr.get("head", {}).get("ref", ""),
         })
 
-        body_text = pr.get("body") or ""
-        comments = gh_api(f"repos/{repo}/pulls/{pr['number']}/comments?per_page=100")
-        if comments and isinstance(comments, list):
-            for c in comments:
-                c_body = c.get("body", "")
-                if c_body:
-                    c_author = c.get("user", {}).get("login", "unknown")
-                    c_path = c.get("path", "")
-                    body_text += f"\n\n---\n**{c_author}** on `{c_path}`: {c_body}"
-
+        body_text = (pr.get("body") or "") + comment_map.get(pr["number"], "")
         insert_chunk(conn, "pr", f"PR#{pr['number']}", pr.get("title", ""), body_text, metadata)
         count += 1
     return count
