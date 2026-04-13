@@ -23,7 +23,6 @@ from pathlib import Path
 
 PRESENTATION_SCHEMA = """
 PRAGMA journal_mode = DELETE;
-PRAGMA page_size = 1024;
 PRAGMA foreign_keys = ON;
 
 -- Issues & PRs (unified)
