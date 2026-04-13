@@ -138,6 +138,76 @@ CREATE TRIGGER IF NOT EXISTS comments_ai AFTER INSERT ON comments BEGIN
         VALUES (new.id, new.author, new.body);
 END;
 
+-- Contributor analytics
+CREATE TABLE IF NOT EXISTS contributor_stats (
+    author              TEXT PRIMARY KEY,
+    commit_count        INTEGER NOT NULL DEFAULT 0,
+    additions           INTEGER NOT NULL DEFAULT 0,
+    deletions           INTEGER NOT NULL DEFAULT 0,
+    issues_opened       INTEGER NOT NULL DEFAULT 0,
+    prs_opened          INTEGER NOT NULL DEFAULT 0,
+    issue_comments      INTEGER NOT NULL DEFAULT 0,
+    pr_comments         INTEGER NOT NULL DEFAULT 0,
+    reviews_submitted   INTEGER NOT NULL DEFAULT 0,
+    review_comments     INTEGER NOT NULL DEFAULT 0,
+    total_items         INTEGER NOT NULL DEFAULT 0,
+    total_comments      INTEGER NOT NULL DEFAULT 0,
+    activity_score      INTEGER NOT NULL DEFAULT 0,
+    first_active_at     TEXT NOT NULL DEFAULT '',
+    last_active_at      TEXT NOT NULL DEFAULT '',
+    top_year            INTEGER,
+    top_year_commits    INTEGER NOT NULL DEFAULT 0,
+    top_year_activity   INTEGER NOT NULL DEFAULT 0,
+    primary_role        TEXT NOT NULL DEFAULT '',
+    summary             TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_contributor_score
+    ON contributor_stats(activity_score DESC, commit_count DESC, author);
+
+CREATE TABLE IF NOT EXISTS contributor_yearly (
+    author              TEXT NOT NULL,
+    year                INTEGER NOT NULL,
+    commit_count        INTEGER NOT NULL DEFAULT 0,
+    additions           INTEGER NOT NULL DEFAULT 0,
+    deletions           INTEGER NOT NULL DEFAULT 0,
+    issues_opened       INTEGER NOT NULL DEFAULT 0,
+    prs_opened          INTEGER NOT NULL DEFAULT 0,
+    issue_comments      INTEGER NOT NULL DEFAULT 0,
+    pr_comments         INTEGER NOT NULL DEFAULT 0,
+    reviews_submitted   INTEGER NOT NULL DEFAULT 0,
+    review_comments     INTEGER NOT NULL DEFAULT 0,
+    total_items         INTEGER NOT NULL DEFAULT 0,
+    total_comments      INTEGER NOT NULL DEFAULT 0,
+    activity_score      INTEGER NOT NULL DEFAULT 0,
+    first_active_at     TEXT NOT NULL DEFAULT '',
+    last_active_at      TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (author, year)
+);
+
+CREATE INDEX IF NOT EXISTS idx_contributor_yearly_rank
+    ON contributor_yearly(year DESC, activity_score DESC, commit_count DESC, author);
+
+CREATE TABLE IF NOT EXISTS reference_points (
+    category        TEXT NOT NULL,
+    metric          TEXT NOT NULL,
+    scope           TEXT NOT NULL,
+    rank            INTEGER NOT NULL,
+    entity_type     TEXT NOT NULL,
+    entity_key      TEXT NOT NULL,
+    label           TEXT NOT NULL DEFAULT '',
+    value_int       INTEGER NOT NULL DEFAULT 0,
+    secondary_value INTEGER NOT NULL DEFAULT 0,
+    details         TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (category, metric, scope, rank)
+);
+
+CREATE INDEX IF NOT EXISTS idx_reference_points_metric
+    ON reference_points(category, metric, scope, rank);
+
+CREATE INDEX IF NOT EXISTS idx_reference_points_entity
+    ON reference_points(entity_type, entity_key);
+
 -- Cross-references
 CREATE TABLE IF NOT EXISTS cross_refs (
     id              INTEGER PRIMARY KEY,
@@ -232,6 +302,110 @@ def resolve_commit_author(author_name: str, author_email: str, author_map: dict[
     if author_email in author_map:
         return author_map[author_email]
     return author_name or ""
+
+
+def empty_contributor_row() -> dict[str, int | str]:
+    """Return a zeroed contributor aggregate row."""
+    return {
+        "commit_count": 0,
+        "additions": 0,
+        "deletions": 0,
+        "issues_opened": 0,
+        "prs_opened": 0,
+        "issue_comments": 0,
+        "pr_comments": 0,
+        "reviews_submitted": 0,
+        "review_comments": 0,
+        "first_active_at": "",
+        "last_active_at": "",
+    }
+
+
+def extract_year(ts: str) -> int | None:
+    """Extract YYYY from an ISO timestamp."""
+    if not ts or len(ts) < 4:
+        return None
+    prefix = ts[:4]
+    if prefix.isdigit():
+        return int(prefix)
+    return None
+
+
+def update_activity_window(row: dict[str, int | str], ts: str) -> None:
+    """Track first/last seen timestamps for a contributor row."""
+    if not ts:
+        return
+    first = str(row.get("first_active_at", ""))
+    last = str(row.get("last_active_at", ""))
+    if not first or ts < first:
+        row["first_active_at"] = ts
+    if not last or ts > last:
+        row["last_active_at"] = ts
+
+
+def bump_author(stats: dict[str, dict[str, int | str]], author: str, activity_at: str = "", **updates: int) -> None:
+    """Accumulate contributor-level analytics."""
+    author = (author or "").strip()
+    if not author:
+        return
+
+    row = stats.setdefault(author, empty_contributor_row())
+    update_activity_window(row, activity_at)
+
+    for key, value in updates.items():
+        row[key] = int(row.get(key, 0)) + int(value or 0)
+
+
+def finalize_contributor_row(row: dict[str, int | str]) -> dict[str, int | str]:
+    """Compute rollup fields for a contributor aggregate row."""
+    total_items = int(row["issues_opened"]) + int(row["prs_opened"])
+    total_comments = (
+        int(row["issue_comments"]) +
+        int(row["pr_comments"]) +
+        int(row["review_comments"])
+    )
+    activity_score = (
+        int(row["commit_count"]) +
+        total_items +
+        total_comments +
+        int(row["reviews_submitted"])
+    )
+    return {
+        **row,
+        "total_items": total_items,
+        "total_comments": total_comments,
+        "activity_score": activity_score,
+    }
+
+
+def infer_primary_role(row: dict[str, int | str]) -> str:
+    """Choose a simple contributor role label for query-facing summaries."""
+    weights = {
+        "coder": int(row["commit_count"]),
+        "discussant": int(row["total_comments"]),
+        "reporter": int(row["issues_opened"]),
+        "author": int(row["prs_opened"]),
+        "reviewer": int(row["reviews_submitted"]) + int(row["review_comments"]),
+    }
+    role, score = max(weights.items(), key=lambda item: item[1])
+    return role if score > 0 else "observer"
+
+
+def summarize_contributor(author: str, row: dict[str, int | str]) -> str:
+    """Generate a compact text summary for LLM-friendly querying."""
+    parts = []
+    if int(row["commit_count"]) > 0:
+        parts.append(f"{row['commit_count']} commits")
+    if int(row["total_items"]) > 0:
+        parts.append(f"{row['total_items']} issues/prs opened")
+    if int(row["total_comments"]) > 0:
+        parts.append(f"{row['total_comments']} comments")
+    if int(row["reviews_submitted"]) > 0:
+        parts.append(f"{row['reviews_submitted']} reviews")
+    if not parts:
+        parts.append("no recorded activity")
+    joined = ", ".join(parts)
+    return f"{author}: {joined}; primary role {row['primary_role']}."
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +572,305 @@ def build_comments(mirror: sqlite3.Connection, pres: sqlite3.Connection) -> int:
     return count
 
 
+def build_contributor_stats(
+    mirror: sqlite3.Connection,
+    pres: sqlite3.Connection,
+    author_map: dict[str, str],
+) -> int:
+    """Build contributor-level analytics for website-ready history queries.
+
+    Returns the number of distinct contributors written to contributor_stats.
+    """
+    stats: dict[str, dict[str, int | str]] = {}
+    yearly: dict[tuple[str, int], dict[str, int | str]] = {}
+    pr_numbers = {
+        row[0] for row in mirror.execute("SELECT number FROM pull_requests")
+    }
+
+    for row in mirror.execute("""
+        SELECT author_name, author_email, author_date, additions, deletions
+        FROM commits
+    """):
+        author_name, author_email, author_date, additions, deletions = row
+        author = resolve_commit_author(author_name or "", author_email or "", author_map)
+        ts = author_date or ""
+        bump_author(stats, author, activity_at=ts, commit_count=1, additions=additions or 0, deletions=deletions or 0)
+        year = extract_year(ts)
+        if year is not None:
+            bump_author(yearly, f"{author}\0{year}", activity_at=ts, commit_count=1, additions=additions or 0, deletions=deletions or 0)
+
+    for row in mirror.execute("""
+        SELECT author, created_at FROM issues
+        WHERE author IS NOT NULL AND author != ''
+    """):
+        author, created_at = row
+        ts = created_at or ""
+        bump_author(stats, author, activity_at=ts, issues_opened=1)
+        year = extract_year(ts)
+        if year is not None:
+            bump_author(yearly, f"{author}\0{year}", activity_at=ts, issues_opened=1)
+
+    for row in mirror.execute("""
+        SELECT author, created_at FROM pull_requests
+        WHERE author IS NOT NULL AND author != ''
+    """):
+        author, created_at = row
+        ts = created_at or ""
+        bump_author(stats, author, activity_at=ts, prs_opened=1)
+        year = extract_year(ts)
+        if year is not None:
+            bump_author(yearly, f"{author}\0{year}", activity_at=ts, prs_opened=1)
+
+    for row in mirror.execute("""
+        SELECT issue_number, author, created_at FROM issue_comments
+        WHERE author IS NOT NULL AND author != ''
+    """):
+        issue_number, author, created_at = row
+        ts = created_at or ""
+        field = "pr_comments" if issue_number in pr_numbers else "issue_comments"
+        bump_author(stats, author, activity_at=ts, **{field: 1})
+        year = extract_year(ts)
+        if year is not None:
+            bump_author(yearly, f"{author}\0{year}", activity_at=ts, **{field: 1})
+
+    for row in mirror.execute("""
+        SELECT author, submitted_at FROM pr_reviews
+        WHERE author IS NOT NULL AND author != ''
+    """):
+        author, submitted_at = row
+        ts = submitted_at or ""
+        bump_author(stats, author, activity_at=ts, reviews_submitted=1)
+        year = extract_year(ts)
+        if year is not None:
+            bump_author(yearly, f"{author}\0{year}", activity_at=ts, reviews_submitted=1)
+
+    for row in mirror.execute("""
+        SELECT author, created_at FROM pr_review_comments
+        WHERE author IS NOT NULL AND author != ''
+    """):
+        author, created_at = row
+        ts = created_at or ""
+        bump_author(stats, author, activity_at=ts, review_comments=1)
+        year = extract_year(ts)
+        if year is not None:
+            bump_author(yearly, f"{author}\0{year}", activity_at=ts, review_comments=1)
+
+    yearly_by_author: dict[str, list[dict[str, int | str]]] = {}
+    for yearly_key, row in yearly.items():
+        author, year_text = yearly_key.split("\0", 1)
+        year = int(year_text)
+        final_row = finalize_contributor_row(row)
+        yearly_by_author.setdefault(author, []).append({"year": year, **final_row})
+
+        pres.execute("""
+            INSERT INTO contributor_yearly (
+                author, year, commit_count, additions, deletions,
+                issues_opened, prs_opened,
+                issue_comments, pr_comments, reviews_submitted, review_comments,
+                total_items, total_comments, activity_score,
+                first_active_at, last_active_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            author,
+            year,
+            final_row["commit_count"],
+            final_row["additions"],
+            final_row["deletions"],
+            final_row["issues_opened"],
+            final_row["prs_opened"],
+            final_row["issue_comments"],
+            final_row["pr_comments"],
+            final_row["reviews_submitted"],
+            final_row["review_comments"],
+            final_row["total_items"],
+            final_row["total_comments"],
+            final_row["activity_score"],
+            final_row["first_active_at"],
+            final_row["last_active_at"],
+        ))
+
+    for author, row in sorted(stats.items()):
+        final_row = finalize_contributor_row(row)
+        author_years = yearly_by_author.get(author, [])
+        top_year = None
+        top_year_activity = 0
+        top_year_commits = 0
+        if author_years:
+            best = max(author_years, key=lambda item: (
+                int(item["activity_score"]),
+                int(item["commit_count"]),
+                int(item["total_items"]),
+                int(item["total_comments"]),
+                int(item["year"]),
+            ))
+            top_year = int(best["year"])
+            top_year_activity = int(best["activity_score"])
+            top_year_commits = int(best["commit_count"])
+
+        final_row["primary_role"] = infer_primary_role(final_row)
+        final_row["summary"] = summarize_contributor(author, final_row)
+        pres.execute("""
+            INSERT INTO contributor_stats (
+                author, commit_count, additions, deletions,
+                issues_opened, prs_opened,
+                issue_comments, pr_comments, reviews_submitted, review_comments,
+                total_items, total_comments, activity_score,
+                first_active_at, last_active_at,
+                top_year, top_year_commits, top_year_activity,
+                primary_role, summary
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            author,
+            final_row["commit_count"],
+            final_row["additions"],
+            final_row["deletions"],
+            final_row["issues_opened"],
+            final_row["prs_opened"],
+            final_row["issue_comments"],
+            final_row["pr_comments"],
+            final_row["reviews_submitted"],
+            final_row["review_comments"],
+            final_row["total_items"],
+            final_row["total_comments"],
+            final_row["activity_score"],
+            final_row["first_active_at"],
+            final_row["last_active_at"],
+            top_year,
+            top_year_commits,
+            top_year_activity,
+            final_row["primary_role"],
+            final_row["summary"],
+        ))
+
+    pres.commit()
+    return len(stats)
+
+
+def build_reference_points(pres: sqlite3.Connection) -> int:
+    """Build canonical ranked reference rows for common repository questions."""
+    count = 0
+
+    def insert_ranked(metric: str, scope: str, rows: list[tuple], detail_fn) -> None:
+        nonlocal count
+        for rank, row in enumerate(rows[:10], start=1):
+            entity_key, label, value_int, secondary_value = row
+            details = json.dumps(detail_fn(row), sort_keys=True)
+            pres.execute("""
+                INSERT INTO reference_points (
+                    category, metric, scope, rank,
+                    entity_type, entity_key, label,
+                    value_int, secondary_value, details
+                )
+                VALUES ('contributor', ?, ?, ?, 'author', ?, ?, ?, ?, ?)
+            """, (
+                metric,
+                scope,
+                rank,
+                entity_key,
+                label,
+                int(value_int or 0),
+                int(secondary_value or 0),
+                details,
+            ))
+            count += 1
+
+    metric_queries = [
+        (
+            "commits",
+            """
+            SELECT author, author, commit_count, additions
+            FROM contributor_stats
+            WHERE commit_count > 0
+            ORDER BY commit_count DESC, additions DESC, author
+            """,
+            lambda row: {"commit_count": row[2], "additions": row[3]},
+        ),
+        (
+            "code_churn",
+            """
+            SELECT author, author, (additions + deletions) AS churn, commit_count
+            FROM contributor_stats
+            WHERE commit_count > 0
+            ORDER BY churn DESC, commit_count DESC, author
+            """,
+            lambda row: {"code_churn": row[2], "commit_count": row[3]},
+        ),
+        (
+            "discussion",
+            """
+            SELECT author, author, (total_comments + reviews_submitted) AS discussion_score, total_comments
+            FROM contributor_stats
+            WHERE total_comments > 0 OR reviews_submitted > 0
+            ORDER BY discussion_score DESC, total_comments DESC, review_comments DESC, author
+            """,
+            lambda row: {"discussion_score": row[2], "total_comments": row[3]},
+        ),
+        (
+            "issues_opened",
+            """
+            SELECT author, author, issues_opened, activity_score
+            FROM contributor_stats
+            WHERE issues_opened > 0
+            ORDER BY issues_opened DESC, activity_score DESC, author
+            """,
+            lambda row: {"issues_opened": row[2], "activity_score": row[3]},
+        ),
+        (
+            "prs_opened",
+            """
+            SELECT author, author, prs_opened, activity_score
+            FROM contributor_stats
+            WHERE prs_opened > 0
+            ORDER BY prs_opened DESC, activity_score DESC, author
+            """,
+            lambda row: {"prs_opened": row[2], "activity_score": row[3]},
+        ),
+        (
+            "reviews",
+            """
+            SELECT author, author, reviews_submitted, review_comments
+            FROM contributor_stats
+            WHERE reviews_submitted > 0 OR review_comments > 0
+            ORDER BY reviews_submitted DESC, review_comments DESC, author
+            """,
+            lambda row: {"reviews_submitted": row[2], "review_comments": row[3]},
+        ),
+        (
+            "overall_activity",
+            """
+            SELECT author, author, activity_score, commit_count
+            FROM contributor_stats
+            WHERE activity_score > 0
+            ORDER BY activity_score DESC, commit_count DESC, total_items DESC, author
+            """,
+            lambda row: {"activity_score": row[2], "commit_count": row[3]},
+        ),
+    ]
+
+    for metric, sql, detail_fn in metric_queries:
+        rows = pres.execute(sql).fetchall()
+        insert_ranked(metric, "all_time", rows, detail_fn)
+
+    for (year,) in pres.execute("SELECT DISTINCT year FROM contributor_yearly ORDER BY year"):
+        rows = pres.execute("""
+            SELECT author, author, activity_score, commit_count
+            FROM contributor_yearly
+            WHERE year = ? AND activity_score > 0
+            ORDER BY activity_score DESC, commit_count DESC, total_items DESC, author
+        """, (year,)).fetchall()
+        insert_ranked(
+            "overall_activity",
+            f"year:{year}",
+            rows,
+            lambda row, yr=year: {"year": yr, "activity_score": row[2], "commit_count": row[3]},
+        )
+
+    pres.commit()
+    return count
+
+
 def build_cross_refs(pres: sqlite3.Connection) -> int:
     """Extract cross-references from item bodies and commit messages."""
     count = 0
@@ -521,6 +994,12 @@ def main() -> None:
     n_comments = build_comments(mirror, pres)
     print(f"  Comments: {n_comments}")
 
+    n_contributors = build_contributor_stats(mirror, pres, author_map)
+    print(f"  Contributors: {n_contributors}")
+
+    n_reference_points = build_reference_points(pres)
+    print(f"  Reference points: {n_reference_points}")
+
     n_refs = build_cross_refs(pres)
     print(f"  Cross-references: {n_refs}")
 
@@ -534,6 +1013,8 @@ def main() -> None:
     pres.execute("INSERT OR REPLACE INTO meta VALUES ('total_items', ?)", (str(n_items),))
     pres.execute("INSERT OR REPLACE INTO meta VALUES ('total_commits', ?)", (str(n_commits),))
     pres.execute("INSERT OR REPLACE INTO meta VALUES ('total_comments', ?)", (str(n_comments),))
+    pres.execute("INSERT OR REPLACE INTO meta VALUES ('total_contributors', ?)", (str(n_contributors),))
+    pres.execute("INSERT OR REPLACE INTO meta VALUES ('total_reference_points', ?)", (str(n_reference_points),))
     pres.execute("INSERT OR REPLACE INTO meta VALUES ('total_cross_refs', ?)", (str(n_refs),))
     pres.execute("INSERT OR REPLACE INTO meta VALUES ('built_at', ?)",
                  (datetime.now(timezone.utc).isoformat(),))

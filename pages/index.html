@@ -24,23 +24,47 @@
 
 <!-- ===== QUERY DEMO (hero) ===== -->
 <div id="query-section">
-  <h2>Live Query Demo</h2>
+  <h2>Repository Questions</h2>
+  <p class="section-intro">This is one monolith presentation DB served over the CDN. It keeps search indexes, contributor profiles, yearly rollups, and ranked reference points in one place so common repository-history questions are cheap to query.</p>
   <div id="status" class="status loading">Loading SQLite WASM + database...</div>
+
+  <div class="insight-grid" id="insight-grid">
+    <article class="insight-card loading">
+      <div class="insight-kicker">History question</div>
+      <h3>Top Code Contributor</h3>
+      <p>Loading contributor summary...</p>
+    </article>
+    <article class="insight-card loading">
+      <div class="insight-kicker">History question</div>
+      <h3>Top Discussion Contributor</h3>
+      <p>Loading contributor summary...</p>
+    </article>
+    <article class="insight-card loading">
+      <div class="insight-kicker">History question</div>
+      <h3>Most Active Overall</h3>
+      <p>Loading contributor summary...</p>
+    </article>
+  </div>
 
   <div class="query-buttons">
     <button class="query-btn" data-query="SELECT key, value FROM meta">Build metadata</button>
     <button class="query-btn" data-query="SELECT entity_type, number, title, state, author FROM items ORDER BY updated_at DESC LIMIT 20">Recent items</button>
-    <button class="query-btn" data-query="SELECT i.number, i.entity_type, i.title, i.state, bm25(items_fts, 10.0, 1.0, 5.0, 3.0) as rank FROM items_fts f JOIN items i ON i.id = f.rowid WHERE items_fts MATCH 'ESP32' ORDER BY rank LIMIT 10">Search: "ESP32"</button>
-    <button class="query-btn" data-query="SELECT i.number, i.title, snippet(items_fts, 1, '**', '**', '...', 32) as snippet FROM items_fts f JOIN items i ON i.id = f.rowid WHERE items_fts MATCH 'crash OR panic' ORDER BY bm25(items_fts, 10.0, 1.0, 5.0, 3.0) LIMIT 10">Search: "crash"</button>
-    <button class="query-btn" data-query="SELECT author, COUNT(*) as commits, SUM(additions) as adds, SUM(deletions) as dels FROM commits GROUP BY author ORDER BY commits DESC LIMIT 10">Top committers</button>
-    <button class="query-btn" data-query="SELECT author, COUNT(*) as n FROM items WHERE entity_type='issue' GROUP BY author ORDER BY n DESC LIMIT 10">Top reporters</button>
+    <button class="query-btn" data-query="SELECT rank, label AS author, value_int AS commits, secondary_value AS additions FROM reference_points WHERE category='contributor' AND metric='commits' AND scope='all_time' ORDER BY rank">Who contributed the most code?</button>
+    <button class="query-btn" data-query="SELECT rank, label AS author, value_int AS churn, secondary_value AS commit_count FROM reference_points WHERE category='contributor' AND metric='code_churn' AND scope='all_time' ORDER BY rank">Who changed the most code?</button>
+    <button class="query-btn" data-query="SELECT rank, label AS author, value_int AS discussion_score, secondary_value AS total_comments FROM reference_points WHERE category='contributor' AND metric='discussion' AND scope='all_time' ORDER BY rank">Who contributed the most discussion?</button>
+    <button class="query-btn" data-query="SELECT rank, label AS author, value_int AS activity_score, secondary_value AS commit_count FROM reference_points WHERE category='contributor' AND metric='overall_activity' AND scope='all_time' ORDER BY rank">Most active overall</button>
+    <button class="query-btn" data-query="SELECT CAST(SUBSTR(scope, 6) AS INTEGER) AS year, label AS author, value_int AS activity_score, secondary_value AS commit_count FROM reference_points WHERE category='contributor' AND metric='overall_activity' AND scope LIKE 'year:%' AND rank=1 ORDER BY year DESC">Top contributor by year</button>
+    <button class="query-btn" data-query="SELECT author, primary_role, summary, first_active_at, last_active_at, top_year, top_year_activity FROM contributor_stats ORDER BY activity_score DESC, commit_count DESC LIMIT 15">Contributor profiles</button>
+    <button class="query-btn" data-query="SELECT author, year, commit_count, total_items, total_comments, activity_score FROM contributor_yearly ORDER BY year DESC, activity_score DESC, commit_count DESC LIMIT 30">Contributor yearly rollup</button>
+    <button class="query-btn" data-query="SELECT i.number, i.entity_type, i.title, i.state, bm25(items_fts, 10.0, 1.0, 5.0, 3.0) as rank FROM items_fts f JOIN items i ON i.id = f.rowid WHERE items_fts MATCH 'ESP32' ORDER BY rank LIMIT 10">Search: ESP32</button>
+    <button class="query-btn" data-query="SELECT i.number, i.title, snippet(items_fts, 1, '**', '**', '...', 32) as snippet FROM items_fts f JOIN items i ON i.id = f.rowid WHERE items_fts MATCH 'crash OR panic' ORDER BY bm25(items_fts, 10.0, 1.0, 5.0, 3.0) LIMIT 10">Search: crash</button>
     <button class="query-btn" data-query="SELECT number, title, comment_count, state FROM items WHERE entity_type='issue' ORDER BY comment_count DESC LIMIT 10">Most discussed</button>
     <button class="query-btn" data-query="SELECT email, github_user FROM author_map ORDER BY github_user">Author map</button>
     <button class="query-btn" data-query="SELECT name, type FROM sqlite_master ORDER BY type, name">Schema</button>
   </div>
 
   <div class="custom-query">
-    <input type="text" id="custom-sql" placeholder="SELECT * FROM chunks LIMIT 5" />
+    <input type="text" id="custom-sql" placeholder="SELECT * FROM reference_points WHERE metric='overall_activity' ORDER BY scope, rank" />
     <button id="run-btn">Run</button>
   </div>
 
@@ -59,29 +83,42 @@
 <details>
   <summary>Schema</summary>
   <div class="detail-content">
-    <pre><code>-- Base data table
-CREATE TABLE chunks (
-    id INTEGER PRIMARY KEY,
-    source_type TEXT,  -- 'file', 'issue', 'pr', 'commit', 'wiki'
-    path TEXT,         -- file path, issue number, etc.
-    title TEXT,        -- filename, issue title, commit subject
-    body TEXT,         -- content
-    metadata TEXT      -- JSON blob
+    <pre><code>-- Search-oriented presentation DB
+CREATE TABLE items (
+    number INTEGER, entity_type TEXT, title TEXT, body TEXT,
+    labels TEXT, author TEXT, state TEXT, updated_at TEXT
 );
-
--- FTS5 trigram index (substring/fuzzy matching)
-CREATE VIRTUAL TABLE search_trigram USING fts5(
-    source_type, path, title, body, metadata,
-    content=chunks, content_rowid=id,
-    tokenize='trigram'
+CREATE TABLE commits (
+    sha TEXT, subject TEXT, body TEXT, author TEXT,
+    committed_at TEXT, additions INTEGER, deletions INTEGER
 );
-
--- FTS5 porter index (stemmed whole-word search)
-CREATE VIRTUAL TABLE search_porter USING fts5(
-    source_type, path, title, body, metadata,
-    content=chunks, content_rowid=id,
-    tokenize='porter unicode61'
-);</code></pre>
+CREATE TABLE comments (
+    parent_type TEXT, parent_number INTEGER, author TEXT, body TEXT
+);
+CREATE TABLE contributor_stats (
+    author TEXT PRIMARY KEY,
+    commit_count INTEGER,
+    additions INTEGER,
+    deletions INTEGER,
+    issues_opened INTEGER,
+    prs_opened INTEGER,
+    total_comments INTEGER,
+    reviews_submitted INTEGER,
+    activity_score INTEGER,
+    top_year INTEGER,
+    primary_role TEXT,
+    summary TEXT
+);
+CREATE TABLE contributor_yearly (
+    author TEXT, year INTEGER, activity_score INTEGER,
+    commit_count INTEGER, total_items INTEGER, total_comments INTEGER
+);
+CREATE TABLE reference_points (
+    category TEXT, metric TEXT, scope TEXT, rank INTEGER,
+    entity_key TEXT, label TEXT, value_int INTEGER, secondary_value INTEGER
+);
+CREATE VIRTUAL TABLE items_fts USING fts5(... tokenize='porter unicode61 remove_diacritics 2');
+CREATE VIRTUAL TABLE items_trigram USING fts5(... tokenize='trigram');</code></pre>
   </div>
 </details>
 

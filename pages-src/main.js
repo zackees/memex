@@ -1,14 +1,66 @@
 /**
- * Memex demo page — interactive query UI using HTTP range requests.
- * Replaces the old app.js that downloaded the entire database.
+ * Memex demo page - interactive query UI using HTTP range requests.
  */
 import { openMemexDb, query } from './memex.js';
 
 let db = null;
 let currentQuery = '';
 
+const HIGHLIGHTS = [
+  {
+    title: 'Top Code Contributor',
+    sql: `SELECT r.label, r.value_int, r.secondary_value, c.summary
+          FROM reference_points r
+          LEFT JOIN contributor_stats c ON c.author = r.entity_key
+          WHERE r.category='contributor' AND r.metric='commits' AND r.scope='all_time' AND r.rank=1`,
+    detailSql: `SELECT rank, label AS author, value_int AS commits, secondary_value AS additions
+                FROM reference_points
+                WHERE category='contributor' AND metric='commits' AND scope='all_time'
+                ORDER BY rank`,
+    describe(row) {
+      if (!row) return 'No commit history available.';
+      return `${row[0]} leads with ${formatNumber(row[1])} commits. ${row[3] || ''}`.trim();
+    },
+  },
+  {
+    title: 'Top Discussion Contributor',
+    sql: `SELECT r.label, r.value_int, r.secondary_value, c.summary
+          FROM reference_points r
+          LEFT JOIN contributor_stats c ON c.author = r.entity_key
+          WHERE r.category='contributor' AND r.metric='discussion' AND r.scope='all_time' AND r.rank=1`,
+    detailSql: `SELECT rank, label AS author, value_int AS discussion_score, secondary_value AS total_comments
+                FROM reference_points
+                WHERE category='contributor' AND metric='discussion' AND scope='all_time'
+                ORDER BY rank`,
+    describe(row) {
+      if (!row) return 'No discussion activity available.';
+      return `${row[0]} leads discussion with score ${formatNumber(row[1])}. ${row[3] || ''}`.trim();
+    },
+  },
+  {
+    title: 'Most Active Overall',
+    sql: `SELECT r.label, r.value_int, r.secondary_value, c.summary
+          FROM reference_points r
+          LEFT JOIN contributor_stats c ON c.author = r.entity_key
+          WHERE r.category='contributor' AND r.metric='overall_activity' AND r.scope='all_time' AND r.rank=1`,
+    detailSql: `SELECT rank, label AS author, value_int AS activity_score, secondary_value AS commit_count
+                FROM reference_points
+                WHERE category='contributor' AND metric='overall_activity' AND scope='all_time'
+                ORDER BY rank`,
+    describe(row) {
+      if (!row) return 'No contributor activity available.';
+      return `${row[0]} leads overall with activity score ${formatNumber(row[1])}. ${row[3] || ''}`.trim();
+    },
+  },
+];
+
 function escapeHtml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function formatNumber(value) {
+  const num = Number(value || 0);
+  return Number.isFinite(num) ? num.toLocaleString() : String(value);
 }
 
 function renderResults(data) {
@@ -71,16 +123,20 @@ async function runSQL(sql) {
   }
 }
 
+async function executeAndRender(sql, button) {
+  document.querySelectorAll('.query-btn').forEach(function(b) { b.classList.remove('active'); });
+  if (button) button.classList.add('active');
+  showQuery(sql);
+  document.getElementById('results').innerHTML = '<div class="status loading">Running query...</div>';
+  const result = await runSQL(sql);
+  renderResults(result);
+}
+
 function enableButtons() {
   document.querySelectorAll('.query-btn').forEach(function(btn) {
     btn.addEventListener('click', async function() {
-      document.querySelectorAll('.query-btn').forEach(function(b) { b.classList.remove('active'); });
-      btn.classList.add('active');
       const sql = btn.getAttribute('data-query');
-      showQuery(sql);
-      document.getElementById('results').innerHTML = '<div class="status loading">Running query...</div>';
-      const result = await runSQL(sql);
-      renderResults(result);
+      await executeAndRender(sql, btn);
     });
   });
 }
@@ -89,11 +145,41 @@ async function runCustomQuery() {
   const input = document.getElementById('custom-sql');
   const sql = input.value.trim();
   if (!sql) return;
-  showQuery(sql);
-  document.querySelectorAll('.query-btn').forEach(function(b) { b.classList.remove('active'); });
-  document.getElementById('results').innerHTML = '<div class="status loading">Running query...</div>';
-  const result = await runSQL(sql);
-  renderResults(result);
+  await executeAndRender(sql, null);
+}
+
+function renderHighlights(cards) {
+  const grid = document.getElementById('insight-grid');
+  if (!grid) return;
+
+  grid.innerHTML = cards.map(function(card, idx) {
+    return '<article class="insight-card">' +
+      '<div class="insight-kicker">History question</div>' +
+      '<h3>' + escapeHtml(card.title) + '</h3>' +
+      '<p>' + escapeHtml(card.summary) + '</p>' +
+      '<button class="insight-action" data-highlight-index="' + idx + '">View leaderboard</button>' +
+      '</article>';
+  }).join('');
+
+  grid.querySelectorAll('.insight-action').forEach(function(button) {
+    button.addEventListener('click', async function() {
+      const idx = Number(button.getAttribute('data-highlight-index'));
+      const highlight = HIGHLIGHTS[idx];
+      await executeAndRender(highlight.detailSql, null);
+    });
+  });
+}
+
+async function loadHighlights() {
+  const cards = [];
+  for (const highlight of HIGHLIGHTS) {
+    const result = await runSQL(highlight.sql);
+    cards.push({
+      title: highlight.title,
+      summary: result.error ? result.error : highlight.describe(result.rows[0]),
+    });
+  }
+  renderHighlights(cards);
 }
 
 async function init() {
@@ -105,7 +191,6 @@ async function init() {
     const memex = await openMemexDb(dbUrl);
     db = memex.db;
 
-    // Get DB info
     const meta = await query(db, 'SELECT key, value FROM meta');
     const metaMap = {};
     for (const row of meta.rows) metaMap[row[0]] = row[1];
@@ -116,18 +201,20 @@ async function init() {
     statusEl.textContent = 'SQLite (HTTP range requests) \u2022 ' +
       (metaMap.total_items || '?') + ' items \u2022 ' +
       (metaMap.total_commits || '?') + ' commits \u2022 ' +
+      (metaMap.total_contributors || '?') + ' contributors \u2022 ' +
+      (metaMap.total_reference_points || '?') + ' reference points \u2022 ' +
       tables.rows.length + ' tables';
 
-    // Set repo title
     if (metaMap.repo) {
       const titleEl = document.getElementById('repo-title');
       if (titleEl) {
         titleEl.textContent = metaMap.repo;
-        document.title = metaMap.repo + ' \u2014 Memex';
+        document.title = metaMap.repo + ' - Memex';
       }
     }
 
     enableButtons();
+    await loadHighlights();
   } catch (err) {
     statusEl.className = 'status error';
     statusEl.textContent = 'Error: ' + (err.message || String(err));
@@ -135,12 +222,10 @@ async function init() {
   }
 }
 
-// Wire up UI
 document.getElementById('run-btn').addEventListener('click', runCustomQuery);
 document.getElementById('custom-sql').addEventListener('keydown', function(e) {
   if (e.key === 'Enter') runCustomQuery();
 });
 document.getElementById('copy-btn').addEventListener('click', copyQuery);
 
-// Boot
 init();
