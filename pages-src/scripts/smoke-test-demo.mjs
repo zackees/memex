@@ -162,11 +162,15 @@ async function smokeTestPhase(phase, metadata) {
 
 async function assertQueryWorks(page, buttonText, rowSelector) {
   await page.getByRole('button', { name: buttonText }).click();
-  await page.waitForFunction((selector) => {
+  await page.waitForFunction(({ selector, expectedHeaders }) => {
     const rows = document.querySelectorAll(selector);
+    const headers = document.querySelectorAll('#results thead th');
     const status = document.getElementById('results')?.textContent || '';
-    return rows.length > 0 || status.includes('No rows returned.') || status.includes('Error:');
-  }, rowSelector, { timeout: 60000 });
+    return rows.length > 0 ||
+      headers.length >= expectedHeaders ||
+      status.includes('No rows returned.') ||
+      status.includes('Error:');
+  }, { selector: rowSelector, expectedHeaders: 1 }, { timeout: 60000 });
 
   const resultText = await page.locator('#results').textContent();
   if (!resultText || resultText.includes('Error:')) {
