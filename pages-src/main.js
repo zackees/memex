@@ -114,7 +114,8 @@ async function init() {
 
     statusEl.className = 'status ready';
     statusEl.textContent = 'SQLite (HTTP range requests) \u2022 ' +
-      (metaMap.total_chunks || '?') + ' chunks \u2022 ' +
+      (metaMap.total_items || '?') + ' items \u2022 ' +
+      (metaMap.total_commits || '?') + ' commits \u2022 ' +
       tables.rows.length + ' tables';
 
     // Set repo title

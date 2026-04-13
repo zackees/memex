@@ -154,10 +154,12 @@ jobs:
         run: |
           mkdir -p _site
           cp index.db _site/
-          cp memex/dist/wasm/demo.html _site/index.html
-          cp memex/dist/wasm/memex.js _site/
-          cp memex/dist/wasm/memex-*.js _site/
-          cp memex/dist/wasm/sqlite3.wasm _site/
+          # Use pages/ build (non-module, no import.meta.url issues)
+          cp memex/pages/index.html _site/
+          cp memex/pages/style.css _site/
+          cp memex/pages/bundle.js _site/
+          cp memex/pages/memex-*.js _site/
+          cp memex/pages/sqlite3.wasm _site/
           cp -r memex/dist _site/dist
           echo "=== _site ==="
           find _site -type f | sort
