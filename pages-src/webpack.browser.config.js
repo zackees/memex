@@ -11,6 +11,7 @@ export default {
     chunkFilename: 'memex-[name].js',
     assetModuleFilename: 'sqlite3.wasm',
     path: path.resolve(__dirname, '../dist/wasm'),
+    publicPath: './',
     library: { type: 'module' },
     clean: true,
   },

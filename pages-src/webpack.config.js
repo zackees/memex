@@ -10,6 +10,7 @@ export default {
     filename: 'bundle.js',
     chunkFilename: 'memex-[name].js',
     assetModuleFilename: 'sqlite3.wasm',
+    publicPath: './',
     path: path.resolve(__dirname, '../pages'),
     clean: {
       keep: /^(index\.html|style\.css|index\.db)$/,
