@@ -27,6 +27,8 @@ export async function openMemexDb(url, options = {}) {
     timeout: options.timeout || 30000,
     cacheSize: options.cacheSize || 4096,
     backendType: 'sync',
+    // Prevent CDN gzip — range requests on gzipped content return corrupt data
+    headers: { 'Accept-Encoding': 'identity' },
   });
 
   const db = await createSQLiteThread({ http: backend });
