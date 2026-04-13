@@ -153,7 +153,8 @@ jobs:
       - name: Prepare Pages artifact
         run: |
           mkdir -p _site
-          cp index.db _site/
+          # Rename to .sqlite to prevent CDN gzip (breaks range requests)
+          cp index.db _site/index.sqlite
           # Use pages/ build (non-module, no import.meta.url issues)
           cp memex/pages/index.html _site/
           cp memex/pages/style.css _site/

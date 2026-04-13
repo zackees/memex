@@ -100,7 +100,7 @@ async function init() {
   const statusEl = document.getElementById('status');
   try {
     const base = window.location.href.replace(/\/[^/]*$/, '/');
-    const dbUrl = base + 'index.db';
+    const dbUrl = base + 'index.sqlite';
 
     const memex = await openMemexDb(dbUrl);
     db = memex.db;

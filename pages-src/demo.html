@@ -101,7 +101,7 @@ details .detail-content p:last-child{margin-bottom:0}
     <span class="badge">BM25 ranking</span>
     <span class="badge blue">HTTP range requests</span>
   </div>
-  <a href="index.db" download class="download-link">Download index.db</a>
+  <a href="index.sqlite" download class="download-link">Download index.sqlite</a>
 </div>
 
 <div id="query-section">
@@ -235,7 +235,7 @@ async function runCustom() {
   const statusEl = document.getElementById('status');
   try {
     const base = window.location.href.replace(/\/[^/]*$/, '/');
-    const memex = await openMemexDb(base + 'index.db');
+    const memex = await openMemexDb(base + 'index.sqlite');
     db = memex.db;
     const meta = await query(db, 'SELECT key, value FROM meta');
     const m = {}; for (const r of meta.rows) m[r[0]] = r[1];
