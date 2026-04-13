@@ -4,15 +4,25 @@
   "description": "SQLite HTTP range-request client for memex databases",
   "type": "module",
   "scripts": {
+    "wasm:prepare": "node ./scripts/prepare-wasm.mjs",
+    "wasm:set-build-id": "node ./scripts/set-build-id.mjs",
+    "serve:pages": "node ./scripts/serve-pages.mjs",
+    "test:demo:phase": "node ./scripts/smoke-test-demo.mjs",
+    "test:demo:phases": "node ./scripts/smoke-test-demo.mjs all",
     "build": "npm run build:wasm && npm run build:js && npm run build:demo",
-    "build:wasm": "webpack --config webpack.browser.config.js && cp demo.html ../dist/wasm/demo.html && rm -f ../dist/wasm/*.LICENSE.txt",
-    "build:js": "webpack --config webpack.node.config.js && cp demo.html ../dist/js/demo.html",
-    "build:demo": "webpack --config webpack.config.js"
+    "build:wasm": "npm run wasm:prepare && webpack --config webpack.browser.config.js && node ./scripts/postbuild.mjs wasm",
+    "build:js": "npm run wasm:prepare && webpack --config webpack.node.config.js && node ./scripts/postbuild.mjs js",
+    "build:demo": "npm run wasm:prepare && webpack --config webpack.config.js"
   },
   "license": "ISC",
   "dependencies": {
     "sqlite-wasm-http": "^1.2.0",
     "webpack": "^5.106.1",
     "webpack-cli": "^7.0.2"
+  },
+  "devDependencies": {
+    "binaryen": "^129.0.0",
+    "playwright": "^1.59.1",
+    "wabt": "^1.0.39"
   }
 }

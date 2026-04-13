@@ -27,12 +27,12 @@ Pre-built bundles in `dist/` — no npm or bundler needed to use them.
 
 ### dist/wasm/ — WASM build (recommended)
 
-Separate `.wasm` file, smallest JS payload. ~648 KB gzip transfer.
+Separate `.wasm` file, smallest JS payload. ~668 KB gzip transfer.
 
 ```
-memex.js        214 KB   Library entry point
-memex-141.js    235 KB   Background SQLite worker
-sqlite3.wasm    1.45 MB  SQLite 3.44.2 (wasm-opt -Oz)
+memex.js        219 KB   Library entry point
+memex-141.js    240 KB   Background SQLite worker
+sqlite3.wasm    1.51 MB  SQLite 3.44.2 (wasm-opt -Oz)
 demo.html        16 KB   Self-contained demo (CSS inlined)
 ```
 
@@ -185,6 +185,7 @@ npm run build          # all: wasm + js + demo
 npm run build:wasm     # dist/wasm/ only
 npm run build:js       # dist/js/ only
 npm run build:demo     # pages/ (GitHub Pages deploy)
+npm run test:demo:phases  # local browser smoke test for stock/strip/O1/O2/Os/Oz
 ```
 
 ## The name

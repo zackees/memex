@@ -4,6 +4,8 @@ pages/index.db
 # Temp test files
 serve.py
 pages/test*.html
+pages-src/.wasm-opt-test/
+pages-src/generated/
 
 # License txt from webpack
 *.LICENSE.txt
