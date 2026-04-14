@@ -1,7 +1,7 @@
 /**
  * Memex demo page - interactive query UI using HTTP range requests.
  */
-import { openMemexDb, query } from './memex.js';
+import { fetchRows, getSchema, openMemexDb, query } from './memex.js';
 
 let db = null;
 let currentQuery = '';
@@ -97,6 +97,17 @@ function showQuery(sql) {
   display.style.display = 'block';
 }
 
+function formatSchemaAsResult(schema) {
+  return {
+    columns: ['type', 'name', 'columns'],
+    rows: schema.objects.map((object) => [
+      object.type,
+      object.name,
+      object.columns.map((column) => `${column.name}:${column.type || 'UNKNOWN'}`).join(', '),
+    ]),
+  };
+}
+
 function copyQuery() {
   navigator.clipboard.writeText(currentQuery).then(() => {
     const btn = document.getElementById('copy-btn');
@@ -123,6 +134,39 @@ async function runSQL(sql) {
   }
 }
 
+async function runAction(action) {
+  const t0 = performance.now();
+  try {
+    let result;
+    if (action === 'meta') {
+      result = await fetchRows(db, {
+        from: 'meta',
+        columns: ['key', 'value'],
+        orderBy: [{ column: 'key', direction: 'ASC' }],
+      });
+    } else if (action === 'recent-items') {
+      result = await fetchRows(db, {
+        from: 'items',
+        columns: ['entity_type', 'number', 'title', 'state', 'author'],
+        orderBy: [{ column: 'updated_at', direction: 'DESC' }],
+        limit: 20,
+      });
+    } else if (action === 'schema') {
+      result = formatSchemaAsResult(await getSchema(db));
+    } else {
+      throw new Error(`Unsupported action: ${action}`);
+    }
+
+    return {
+      columns: result.columns,
+      rows: result.rows,
+      elapsed: performance.now() - t0,
+    };
+  } catch (err) {
+    return { error: err.message || String(err), elapsed: performance.now() - t0 };
+  }
+}
+
 async function executeAndRender(sql, button) {
   document.querySelectorAll('.query-btn').forEach(function(b) { b.classList.remove('active'); });
   if (button) button.classList.add('active');
@@ -135,6 +179,17 @@ async function executeAndRender(sql, button) {
 function enableButtons() {
   document.querySelectorAll('.query-btn').forEach(function(btn) {
     btn.addEventListener('click', async function() {
+      const action = btn.getAttribute('data-action');
+      if (action) {
+        document.querySelectorAll('.query-btn').forEach(function(b) { b.classList.remove('active'); });
+        btn.classList.add('active');
+        const label = btn.getAttribute('data-label') || action;
+        showQuery(label);
+        document.getElementById('results').innerHTML = '<div class="status loading">Running query...</div>';
+        renderResults(await runAction(action));
+        return;
+      }
+
       const sql = btn.getAttribute('data-query');
       await executeAndRender(sql, btn);
     });
@@ -191,11 +246,15 @@ async function init() {
     const memex = await openMemexDb(dbUrl);
     db = memex.db;
 
-    const meta = await query(db, 'SELECT key, value FROM meta');
+    const meta = await fetchRows(db, {
+      from: 'meta',
+      columns: ['key', 'value'],
+      orderBy: [{ column: 'key', direction: 'ASC' }],
+    });
     const metaMap = {};
     for (const row of meta.rows) metaMap[row[0]] = row[1];
 
-    const tables = await query(db, "SELECT name FROM sqlite_master WHERE type IN ('table','view') ORDER BY name");
+    const schema = await getSchema(db);
 
     statusEl.className = 'status ready';
     statusEl.textContent = 'SQLite (HTTP range requests) \u2022 ' +
@@ -203,7 +262,7 @@ async function init() {
       (metaMap.total_commits || '?') + ' commits \u2022 ' +
       (metaMap.total_contributors || '?') + ' contributors \u2022 ' +
       (metaMap.total_reference_points || '?') + ' reference points \u2022 ' +
-      tables.rows.length + ' tables';
+      schema.objects.length + ' tables';
 
     if (metaMap.repo) {
       const titleEl = document.getElementById('repo-title');

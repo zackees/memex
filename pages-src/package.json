@@ -8,6 +8,7 @@
     "wasm:prepare": "node ./scripts/prepare-wasm.mjs",
     "wasm:set-build-id": "node ./scripts/set-build-id.mjs",
     "serve:pages": "node ./scripts/serve-pages.mjs",
+    "test:unit": "node --test ./test/*.test.mjs",
     "test:demo:phase": "node ./scripts/smoke-test-demo.mjs",
     "test:demo:phases": "node ./scripts/smoke-test-demo.mjs all",
     "build": "npm run build:wasm && npm run build:js && npm run build:demo",

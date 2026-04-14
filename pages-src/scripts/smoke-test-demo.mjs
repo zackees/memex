@@ -125,7 +125,8 @@ async function smokeTestPhase(phase, metadata) {
 
     await assertQueryWorks(page, 'Build metadata', 'table tbody tr');
     await assertQueryWorks(page, 'Recent items', 'table tbody tr');
-    await assertQueryWorks(page, 'Search: "ESP32"', 'table tbody tr');
+    await assertQueryWorks(page, 'Schema', 'table tbody tr');
+    await assertQueryWorks(page, 'Search: ESP32', 'table tbody tr');
 
     if (pageErrors.length) {
       throw new Error(`pageerror: ${pageErrors.join(' | ')}`);

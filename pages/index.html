@@ -47,8 +47,8 @@
   </div>
 
   <div class="query-buttons">
-    <button class="query-btn" data-query="SELECT key, value FROM meta">Build metadata</button>
-    <button class="query-btn" data-query="SELECT entity_type, number, title, state, author FROM items ORDER BY updated_at DESC LIMIT 20">Recent items</button>
+    <button class="query-btn" data-action="meta" data-label='fetchRows("meta")'>Build metadata</button>
+    <button class="query-btn" data-action="recent-items" data-label='fetchRows("items")'>Recent items</button>
     <button class="query-btn" data-query="SELECT rank, label AS author, value_int AS commits, secondary_value AS additions FROM reference_points WHERE category='contributor' AND metric='commits' AND scope='all_time' ORDER BY rank">Who contributed the most code?</button>
     <button class="query-btn" data-query="SELECT rank, label AS author, value_int AS churn, secondary_value AS commit_count FROM reference_points WHERE category='contributor' AND metric='code_churn' AND scope='all_time' ORDER BY rank">Who changed the most code?</button>
     <button class="query-btn" data-query="SELECT rank, label AS author, value_int AS discussion_score, secondary_value AS total_comments FROM reference_points WHERE category='contributor' AND metric='discussion' AND scope='all_time' ORDER BY rank">Who contributed the most discussion?</button>
@@ -60,7 +60,7 @@
     <button class="query-btn" data-query="SELECT i.number, i.title, snippet(items_fts, 1, '**', '**', '...', 32) as snippet FROM items_fts f JOIN items i ON i.id = f.rowid WHERE items_fts MATCH 'crash OR panic' ORDER BY bm25(items_fts, 10.0, 1.0, 5.0, 3.0) LIMIT 10">Search: crash</button>
     <button class="query-btn" data-query="SELECT number, title, comment_count, state FROM items WHERE entity_type='issue' ORDER BY comment_count DESC LIMIT 10">Most discussed</button>
     <button class="query-btn" data-query="SELECT email, github_user FROM author_map ORDER BY github_user">Author map</button>
-    <button class="query-btn" data-query="SELECT name, type FROM sqlite_master ORDER BY type, name">Schema</button>
+    <button class="query-btn" data-action="schema" data-label="getSchema()">Schema</button>
   </div>
 
   <div class="custom-query">
