@@ -1,0 +1,46 @@
+name: Memex CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - issue-*
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: pages-src/package-lock.json
+
+      - name: Install dependencies
+        working-directory: pages-src
+        run: npm ci
+
+      - name: Install Chrome for Playwright
+        working-directory: pages-src
+        run: npx playwright install --with-deps chrome
+
+      - name: Run unit tests
+        working-directory: pages-src
+        run: npm run test:unit
+
+      - name: Build distributables
+        working-directory: pages-src
+        run: npm run build
+
+      - name: Run browser smoke tests
+        working-directory: pages-src
+        run: npm run test:demo:phases
