@@ -109,15 +109,15 @@ details .detail-content p:last-child{margin-bottom:0}
   <div id="status" class="status loading">Connecting to database...</div>
 
   <div class="query-buttons">
-    <button class="query-btn" data-query="SELECT key, value FROM meta">Build metadata</button>
-    <button class="query-btn" data-query="SELECT entity_type, number, title, state, author FROM items ORDER BY updated_at DESC LIMIT 20">Recent items</button>
+    <button class="query-btn" data-action="meta" data-label='fetchRows("meta")'>Build metadata</button>
+    <button class="query-btn" data-action="recent-items" data-label='fetchRows("items")'>Recent items</button>
     <button class="query-btn" data-query="SELECT i.number, i.entity_type, i.title, i.state, bm25(items_fts, 10.0, 1.0, 5.0, 3.0) as rank FROM items_fts f JOIN items i ON i.id = f.rowid WHERE items_fts MATCH 'ESP32' ORDER BY rank LIMIT 10">Search: "ESP32"</button>
     <button class="query-btn" data-query="SELECT i.number, i.title, snippet(items_fts, 1, '**', '**', '...', 32) as snippet FROM items_fts f JOIN items i ON i.id = f.rowid WHERE items_fts MATCH 'crash OR panic' ORDER BY bm25(items_fts, 10.0, 1.0, 5.0, 3.0) LIMIT 10">Search: "crash"</button>
     <button class="query-btn" data-query="SELECT author, COUNT(*) as commits, SUM(additions) as adds, SUM(deletions) as dels FROM commits GROUP BY author ORDER BY commits DESC LIMIT 10">Top committers</button>
     <button class="query-btn" data-query="SELECT author, COUNT(*) as n, SUM(CASE WHEN state='open' THEN 1 ELSE 0 END) as open, SUM(CASE WHEN state='closed' THEN 1 ELSE 0 END) as closed FROM items WHERE entity_type='issue' GROUP BY author ORDER BY n DESC LIMIT 10">Top reporters</button>
     <button class="query-btn" data-query="SELECT number, title, comment_count, state FROM items WHERE entity_type='issue' ORDER BY comment_count DESC LIMIT 10">Most discussed</button>
     <button class="query-btn" data-query="SELECT email, github_user FROM author_map ORDER BY github_user">Author map</button>
-    <button class="query-btn" data-query="SELECT name, type FROM sqlite_master ORDER BY type, name">Schema</button>
+    <button class="query-btn" data-action="schema" data-label="getSchema()">Schema</button>
   </div>
 
   <div class="custom-query">
@@ -164,7 +164,7 @@ CREATE VIRTUAL TABLE search_porter USING fts5(
 </details>
 
 <script type="module">
-import { openMemexDb, query } from './memex.js';
+import { fetchRows, getSchema, openMemexDb, query } from './memex.js';
 
 let db = null;
 let currentQuery = '';
@@ -196,16 +196,64 @@ function showQuery(sql) {
   document.getElementById('query-display').style.display = 'block';
 }
 
+function formatSchemaAsResult(schema) {
+  return {
+    columns: ['type', 'name', 'columns'],
+    rows: schema.objects.map((object) => [
+      object.type,
+      object.name,
+      object.columns.map((column) => `${column.name}:${column.type || 'UNKNOWN'}`).join(', '),
+    ]),
+  };
+}
+
 async function runSQL(sql) {
   const t0 = performance.now();
   try { const r = await query(db, sql); return { columns: r.columns, rows: r.rows, elapsed: performance.now() - t0 }; }
   catch (err) { return { error: err.message || String(err), elapsed: performance.now() - t0 }; }
 }
 
+async function runAction(action) {
+  const t0 = performance.now();
+  try {
+    let result;
+    if (action === 'meta') {
+      result = await fetchRows(db, {
+        from: 'meta',
+        columns: ['key', 'value'],
+        orderBy: [{ column: 'key', direction: 'ASC' }],
+      });
+    } else if (action === 'recent-items') {
+      result = await fetchRows(db, {
+        from: 'items',
+        columns: ['entity_type', 'number', 'title', 'state', 'author'],
+        orderBy: [{ column: 'updated_at', direction: 'DESC' }],
+        limit: 20,
+      });
+    } else if (action === 'schema') {
+      result = formatSchemaAsResult(await getSchema(db));
+    } else {
+      throw new Error(`Unsupported action: ${action}`);
+    }
+
+    return { columns: result.columns, rows: result.rows, elapsed: performance.now() - t0 };
+  } catch (err) {
+    return { error: err.message || String(err), elapsed: performance.now() - t0 };
+  }
+}
+
 document.querySelectorAll('.query-btn').forEach(btn => {
   btn.addEventListener('click', async () => {
     document.querySelectorAll('.query-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
+    const action = btn.getAttribute('data-action');
+    if (action) {
+      showQuery(btn.getAttribute('data-label') || action);
+      document.getElementById('results').innerHTML = '<div class="status loading">Running query...</div>';
+      renderResults(await runAction(action));
+      return;
+    }
+
     const sql = btn.getAttribute('data-query');
     showQuery(sql);
     document.getElementById('results').innerHTML = '<div class="status loading">Running query...</div>';
@@ -237,11 +285,15 @@ async function runCustom() {
     const base = window.location.href.replace(/\/[^/]*$/, '/');
     const memex = await openMemexDb(base + 'index.db');
     db = memex.db;
-    const meta = await query(db, 'SELECT key, value FROM meta');
+    const meta = await fetchRows(db, {
+      from: 'meta',
+      columns: ['key', 'value'],
+      orderBy: [{ column: 'key', direction: 'ASC' }],
+    });
     const m = {}; for (const r of meta.rows) m[r[0]] = r[1];
-    const tables = await query(db, "SELECT name FROM sqlite_master WHERE type IN ('table','view') ORDER BY name");
+    const schema = await getSchema(db);
     statusEl.className = 'status ready';
-    statusEl.textContent = 'SQLite (HTTP range requests) \u2022 ' + (m.total_items || '?') + ' items \u2022 ' + (m.total_commits || '?') + ' commits \u2022 ' + tables.rows.length + ' tables';
+    statusEl.textContent = 'SQLite (HTTP range requests) \u2022 ' + (m.total_items || '?') + ' items \u2022 ' + (m.total_commits || '?') + ' commits \u2022 ' + schema.objects.length + ' tables';
     if (m.repo) { const t = document.getElementById('repo-title'); if (t) { t.textContent = m.repo; document.title = m.repo + ' \u2014 Memex'; } }
   } catch (err) {
     statusEl.className = 'status error';

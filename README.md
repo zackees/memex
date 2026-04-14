@@ -50,7 +50,7 @@ demo.html        16 KB   Self-contained demo (CSS inlined)
 
 ```html
 <script type="module">
-import { openMemexDb, query } from './memex.js';
+import { fetchRows, getSchema, openMemexDb, query } from './memex.js';
 
 const { db, close } = await openMemexDb('https://example.github.io/repo/index.db');
 
@@ -61,7 +61,16 @@ const results = await query(db, `
   ORDER BY rank LIMIT 10
 `);
 
+const schema = await getSchema(db);
+const meta = await fetchRows(db, {
+  from: 'meta',
+  columns: ['key', 'value'],
+  orderBy: [{ column: 'key', direction: 'ASC' }],
+});
+
 console.log(results.columns, results.rows);
+console.log(schema.objects.map((entry) => entry.name));
+console.log(meta.rows);
 await close();
 </script>
 ```
@@ -142,6 +151,11 @@ FROM chunks WHERE source_type = 'issue';
 ### Browser (WASM + HTTP range requests)
 
 Use the pre-built bundles from `dist/wasm/` or `dist/js/`. See [Usage](#usage) above.
+
+The browser client exposes three WASM-backed entry points:
+- `query(db, sql, bind)` for raw SQL
+- `getSchema(db)` to inspect tables/views and column metadata
+- `fetchRows(db, options)` for structured row fetches without string-building SQL in the caller
 
 ### Python
 
