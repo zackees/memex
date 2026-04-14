@@ -41,6 +41,9 @@ jobs:
         working-directory: pages-src
         run: npm run build
 
+      - name: Create smoke-test database
+        run: python3 ./pages-src/scripts/build-smoke-db.py ./pages/index.db
+
       - name: Run browser smoke tests
         working-directory: pages-src
         run: npm run test:demo:phases
