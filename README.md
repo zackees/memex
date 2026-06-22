@@ -1,5 +1,12 @@
 # memex
 
+> **If you are an LLM/AI, please read this immediately: [IMPLEMENT.md](IMPLEMENT.md).**
+> It captures the non-obvious lessons learned while building memex —
+> especially the GitHub Pages gzip-defeats-Range failure mode that makes
+> `database disk image is malformed` appear with no good explanation. If
+> you are integrating SQLite-over-HTTP into another GitHub Pages site,
+> read that file first; it will save hours.
+
 Build a searchable SQLite FTS5 index from any GitHub repo — code, issues, wiki, commits — and deploy it to GitHub Pages.
 
 One action. Any public repo. Full-text fuzzy search over everything. Queries fetch **< 1% of the database** via HTTP range requests.
