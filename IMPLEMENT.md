@@ -7,6 +7,24 @@
 > you skip the *Critical pitfalls* section you will almost certainly hit
 > "database disk image is malformed" and waste hours.
 
+## Contents
+
+1. [What memex actually does](#what-memex-actually-does-one-paragraph)
+2. [Two integration paths](#two-integration-paths-vendor-vs-build-from-source) — pick one
+3. [Critical pitfalls](#critical-pitfalls-read-this-before-writing-code) (1–9)
+4. [Architecture](#architecture)
+5. [Step-by-step recipe](#step-by-step-adding-this-to-a-new-project) (build path)
+6. [Schema design rules under byte-range loading](#schema-design-rules-under-byte-range-loading)
+7. [Performance / cost model](#performance--cost-model)
+8. [Cross-origin DB access (CORS)](#cross-origin-db-access-cors)
+9. [Cache invalidation when the DB updates mid-session](#cache-invalidation-when-the-db-updates-mid-session)
+10. [Upgrading memex / bumping the vendored SHA](#upgrading-memex--bumping-the-vendored-sha)
+11. [Continuous-deploy smoke test (Playwright CI)](#continuous-deploy-smoke-test-playwright-ci)
+12. [Common debugging mistakes](#common-debugging-mistakes)
+13. [Alternatives we considered and rejected](#alternatives-we-considered-and-rejected)
+14. [Files to read in this repo](#files-to-read-in-this-repo)
+15. [TL;DR for an LLM in a hurry](#tldr-for-an-llm-in-a-hurry)
+
 ---
 
 ## What memex actually does (one paragraph)
@@ -21,6 +39,58 @@ penalizing page load.
 The trick is entirely client-side: `sqlite-wasm-http` exposes a custom
 SQLite VFS that intercepts page reads and turns them into ranged `fetch()`
 calls against a static URL.
+
+---
+
+## Two integration paths (vendor vs build-from-source)
+
+There are exactly two supported ways to add this to a new project. Pick
+deliberately — they have different upgrade costs and dependency profiles.
+
+### Path A — Vendor memex's pre-built `dist/wasm/` (recommended for most)
+
+memex publishes a webpack-bundled copy of `sqlite-wasm-http` +
+`sqlite3.wasm` + the `openMemexDb()` wrapper at
+[`dist/wasm/`](dist/wasm/). Copy those files into your bundle root and
+load `memex.js` as an ES module:
+
+```html
+<script type="module">
+import { openMemexDb, query } from './memex.js';
+const { db } = await openMemexDb(new URL('your-db.db', location.href).href);
+const { columns, rows } = await query(db, 'SELECT … FROM …', [bindParams]);
+</script>
+```
+
+- **Pros**: no npm, no webpack, no `node_modules`. The library patches
+  are already baked in. Works in any static-site pipeline that can
+  `curl` files into a bundle directory.
+- **Cons**: pinned to memex's release cadence; you cannot customize the
+  library or shrink the WASM binary.
+- **Real-world example**: FastLED/boards uses this path — its
+  `builders/site.py` downloads `memex.js` + `memex-*.js` + `sqlite3.wasm`
+  from `raw.githubusercontent.com/zackees/memex/<SHA>/dist/wasm/` at
+  build time. See [pitfall #6](#6-two-ways-to-consume-memex-rebuild-from-source-vs-vendor-distwasm)
+  for the SHA-pinning warning.
+
+### Path B — `npm install sqlite-wasm-http` + the patch script
+
+If you need to control the library (custom backend type, smaller WASM,
+extra patches), install the library directly and copy memex's
+`patch-sqlite-wasm-http.mjs` into your `scripts/`:
+
+- **Pros**: full control of the SQLite WASM build (memex's
+  `prepare-wasm.mjs` shrinks `sqlite3.wasm` from ~1.5 MB to ~540 KB
+  gzipped via `wasm-strip` + `wasm-opt -Oz`). Direct access to the
+  promiser API for custom worker pools.
+- **Cons**: requires Node.js, webpack/bundler of your choice, and
+  ongoing maintenance of the patch script when bumping
+  `sqlite-wasm-http`.
+- **Recipe**: see [step-by-step](#step-by-step-adding-this-to-a-new-project) below.
+
+**If unsure, start with Path A.** The vendored bundle is what memex's
+own demo page (`pages/`) uses — by definition it works end-to-end on
+GH Pages. Upgrade by re-downloading at a new SHA.
 
 ---
 
@@ -167,6 +237,100 @@ You can read the exact regex replacements at
 [`pages-src/scripts/patch-sqlite-wasm-http.mjs`](pages-src/scripts/patch-sqlite-wasm-http.mjs).
 If you ever bump `sqlite-wasm-http`, re-test the regexes — the upstream
 dist file structure occasionally changes.
+
+### 6. Two ways to consume memex: rebuild from source vs vendor `dist/wasm/`
+
+(See [Two integration paths](#two-integration-paths-vendor-vs-build-from-source)
+at the top for the path-selection discussion.) This pitfall is about the
+**vendor** path specifically.
+
+**Pin to a commit SHA, not `main`.** The chunk filenames
+(`memex-141.js`, `memex-901.js`, …) are webpack-generated IDs that
+change every time memex is rebuilt. If you reference `main` and memex
+republishes, your site breaks because `memex.js` tries to dynamic-import
+a chunk ID that no longer exists in the published `dist/wasm/`. Example
+download URL with pinned SHA:
+
+```
+https://raw.githubusercontent.com/zackees/memex/03fe8df…/dist/wasm/memex.js
+```
+
+When you bump the SHA, re-download **the full set** of `memex-*.js`
+files and verify the new chunk list at the same path. See
+[Upgrading memex](#upgrading-memex--bumping-the-vendored-sha) below for
+the precise procedure.
+
+### 7. memex's `query()` returns columns + rows arrays, not row objects
+
+```js
+const { columns, rows } = await query(db, 'SELECT a, b FROM t LIMIT 1');
+// columns: ['a', 'b']
+// rows:    [[1, 2]]
+```
+
+If your existing code accesses `row.a` / `row.b` (row objects, e.g.
+from sql.js's `getAsObject()`), wrap `query()` and zip the result into
+per-column objects:
+
+```js
+async function rowsAsObjects(db, sql, params) {
+  const res = await query(db, sql, params);
+  return res.rows.map(r => Object.fromEntries(res.columns.map((c, i) => [c, r[i]])));
+}
+```
+
+Positional `?` placeholders work — pass an array as the third argument.
+Named `$name` placeholders also work — pass an object instead.
+
+### 8. Local development needs explicit MIME types for module scripts
+
+When testing locally with Python's stdlib `http.server` (or
+`RangeHTTPServer`), `.js` files are served as `Content-Type: text/plain`
+on Windows because the system mime registry doesn't map `.js` →
+`application/javascript`. Browsers strictly enforce MIME type for
+`<script type="module">` and refuse to load:
+
+> Failed to load module script: Expected a JavaScript-or-Wasm module
+> script but the server responded with a MIME type of "text/plain".
+
+Fix the local server:
+
+```python
+import mimetypes
+mimetypes.add_type('application/javascript', '.js')
+mimetypes.add_type('application/wasm', '.wasm')
+```
+
+GitHub Pages serves the correct MIME type, so this is purely a
+local-testing artifact. It is **not** the same problem as the
+gzip-defeats-Range issue, but it produces an equally cryptic failure
+that makes you think the deployment is broken. Eliminate it before you
+debug anything else locally.
+
+Note that stdlib `http.server` also does **not** support `Range:`
+requests. Use [`RangeHTTPServer`](https://pypi.org/project/rangehttpserver/)
+(pip install) and combine it with the mimetype additions above. The
+local server still won't gzip the way GH Pages does, so a successful
+local test is necessary but not sufficient — always verify on the
+deployed site too.
+
+### 9. The status message matters for debugging
+
+These exact strings, each pointing at a different failure mode, are
+worth remembering:
+
+| Status string in the page | What it actually means |
+|---|---|
+| `database disk image is malformed` | gzip-defeated-Range; library got bytes from a gzip stream and tried to parse as SQLite |
+| `Length of the file not known. It must either be supplied in the config or given by the HTTP server.` | sql.js-httpvfs only — size-probe response had no `Content-Range` and `Content-Length` was the gzipped size |
+| `Failed to load module script: … MIME type "text/plain"` | Local server MIME issue (see #8 above), not a real deployment problem |
+| `Cannot install OPFS: Missing SharedArrayBuffer and/or Atomics` | Benign warning — sqlite-wasm-http tries OPFS first, falls back to in-memory; OPFS needs COOP/COEP headers that GH Pages doesn't set, and you don't need it for HTTP VFS anyway |
+| `Failed to fetch dynamically imported module: …/memex-XXX.js` | You bumped memex's SHA but didn't re-download the chunk files — see [Upgrading memex](#upgrading-memex--bumping-the-vendored-sha) |
+| `Cross-Origin Resource Blocked` on the DB fetch | Either a redirect crossed origins (use canonical Pages URL with trailing slash on directories) or self-hosted server is missing CORS headers — see [CORS](#cross-origin-db-access-cors) |
+
+Surface them prominently in your loader's error path. The amount of
+time saved by `dbStatus.textContent = err.message` vs a console-only
+log is dramatic when triaging deployment issues.
 
 ---
 
@@ -411,103 +575,270 @@ not take effect.
 
 ---
 
-### 6. Two ways to consume memex: rebuild from source vs vendor `dist/wasm/`
+## Schema design rules under byte-range loading
 
-You do not necessarily need to npm-install + webpack-build to use this
-pattern. memex publishes a pre-built bundle at
-[`dist/wasm/`](dist/wasm/) that any GitHub Pages site can vendor
-directly — just copy the files into your bundle root and import:
+Under HTTP range fetching, **every query pays per page touched**. The
+schema decisions you make at build time determine whether a typical
+query costs 3 round-trips or 300. Keep these rules in mind when
+designing your DB:
 
-```html
-<script type="module">
-import { openMemexDb, query } from './memex.js';
-const { db } = await openMemexDb(new URL('your-db.db', location.href).href);
-const { columns, rows } = await query(db, 'SELECT … FROM …', [bindParams]);
-</script>
+| Do | Don't | Why |
+|---|---|---|
+| `PRAGMA page_size = 4096` before creating any tables | leave the page size at whatever the default is (varies by SQLite version) | The client's `maxPageSize` must match. Mismatch ⇒ silent corruption or extra fetches. 4 KB matches HTTP/2's typical frame granularity and FTS5's chunking. |
+| Index every column used in `WHERE`, `ORDER BY`, or `JOIN` | rely on `LIKE '%foo%'` for search | Each unindexed predicate ⇒ full table scan ⇒ download every page. |
+| Use FTS5 for text search (porter + trigram) | use plain TEXT columns + LIKE for fuzzy match | FTS5 reads ~5–20 index pages per query; LIKE reads every page. |
+| Inline small auxiliary blobs as TEXT/BLOB columns (e.g. `boards.json_blob`) | store them as separate files | One SQL query > one extra HTTP request, especially when the client is already mid-conversation with the DB. |
+| `VACUUM` at the end of the build | leave free-list fragmentation in the file | VACUUM rewrites pages contiguously so adjacent rows live on adjacent pages — the page cache stays warm across nearby queries. |
+| Put hot tables first (rowid order matches insert order in newly-built DBs) | sprinkle the hot data across the file | Pages near the file start get fetched on initial probes anyway; cluster hot rows there to ride the same fetches. |
+| `LIMIT` aggressively (50–100 rows is plenty for an autocomplete) | return thousands of rows | More rows ⇒ more pages ⇒ more round trips. The UI rarely needs more. |
+| Run `EXPLAIN QUERY PLAN` against representative queries before shipping | trust your indexes silently | `EXPLAIN QUERY PLAN` shows `SCAN` vs `SEARCH`. Anything that says `SCAN` will fetch the whole table when range-loaded. |
+| Use `JOIN` to walk from FTS5 results to the base table via rowid | duplicate base-table data into the FTS5 row | The `content='base', content_rowid='rowid'` external-content pattern keeps the FTS5 index small. |
+| Test queries against the deployed DB, not just the local file | assume "fast locally ⇒ fast remote" | Local SQLite is in-memory; range-loaded SQLite costs ~30–80 ms per round trip. A 5-roundtrip query is ~250 ms in production. |
+
+memex's `action/build_presentation.py` is the reference for shaping a
+DB to these rules. Key choices visible in that file:
+
+- Two FTS5 tables (porter + trigram) sharing one `chunks` base table via
+  `content='chunks', content_rowid='rowid'`.
+- Pre-computed `reference_points` table for the queries the UI fires
+  immediately on page load — avoids running an aggregation over the
+  whole `chunks` table on first paint.
+- `PRAGMA optimize` followed by `VACUUM` as the last build step.
+
+---
+
+## Performance / cost model
+
+Rough numbers for a typical deployment (DB ~10 MB, 4 KB page size,
+HTTP/2 to GH Pages CDN, US-to-US latency ~30 ms RTT):
+
+| Action | Pages touched | Range requests | Wall time |
+|---|---|---|---|
+| Open DB (size probe + header + sqlite_master) | 5–10 | 5–10 | 200–400 ms |
+| Cold FTS5 query (`MATCH 'esp32*'`) | 5–15 | 3–8 (HTTP/2 multiplexed) | 200–500 ms |
+| Warm FTS5 query (neighboring index pages cached) | 0–3 | 0–2 | 30–100 ms |
+| `SELECT … WHERE rowid = ?` (b-tree single-row) | 2–4 | 2–4 | 100–250 ms |
+| `LIKE '%foo%'` over a 10 MB table | every page (~2500) | as many as `cacheSize` lets it batch — easily 100+ | **seconds** — avoid |
+| `sqlite3.wasm` initial download | n/a (one-time, browser-cached) | 1 (gzipped to ~540 KB) | 200–600 ms |
+
+Tuning levers:
+
+- **`cacheSize`** (KB of LRU page cache in the worker, default 4096
+  = 4 MB ≈ 1000 pages). For a 10 MB DB, doubling this often turns
+  every query after the first into a single round trip. Costs RAM in
+  the worker; rarely a problem.
+- **`maxPageSize`** must match the DB's `PRAGMA page_size` exactly. If
+  the DB was built at 4 KB and you set `maxPageSize: 8192`, the
+  library reads two pages per logical page — silently doubling cost.
+- **HTTP/2 multiplexing** helps a lot. Modern browsers issue 6+
+  concurrent range requests in parallel. You don't need to coalesce
+  small ranges yourself; the library does it.
+- **`sqlite3.wasm` is the largest one-time fetch** at ~1.5 MB
+  uncompressed (~540 KB gzipped after `wasm-strip` + `wasm-opt -Oz`,
+  see `pages-src/scripts/prepare-wasm.mjs`). Browsers cache it for
+  weeks via the `Cache-Control: max-age=600` header that GH Pages
+  sets — first-visit cost, not repeat-visit cost.
+
+---
+
+## Cross-origin DB access (CORS)
+
+Same-origin DBs (your portal at `https://owner.github.io/repo/` reading
+`https://owner.github.io/repo/index.db`) just work — no CORS concerns.
+
+Cross-origin (a different page reading your DB) needs server cooperation:
+
+- **GH Pages sets `Access-Control-Allow-Origin: *`** automatically on
+  every static file. This allows the *body* of a cross-origin GET.
+- **For `Range` to work cross-origin**, the response must expose
+  `Accept-Ranges`, `Content-Range`, and `Content-Length` via
+  `Access-Control-Expose-Headers`. GH Pages exposes `*`, which covers
+  these. **Verify with curl + `-H "Origin: https://other-site.com"`**:
+
+  ```bash
+  curl -sI -H "Origin: https://x.com" -H "Accept-Encoding: identity" \
+       -r 0-1023 https://owner.github.io/repo/index.db
+  # Expect:
+  #   HTTP/1.1 206 Partial Content
+  #   Access-Control-Allow-Origin: *
+  #   Access-Control-Expose-Headers: *      ← or explicit Content-Range, Accept-Ranges, Content-Length
+  #   Content-Range: bytes 0-1023/<size>
+  ```
+
+- **If self-hosting on Cloudflare/Netlify/nginx** instead of GH Pages,
+  you must configure the equivalent. A minimal `_headers` for
+  Cloudflare Pages / Netlify:
+
+  ```
+  /*.db
+    Access-Control-Allow-Origin: *
+    Access-Control-Expose-Headers: Accept-Ranges, Content-Range, Content-Length
+    Content-Encoding: identity
+  ```
+
+- **HTTPS is required** for cross-origin range fetches in modern
+  browsers (mixed-content restrictions block HTTP DBs from HTTPS
+  pages). GH Pages is HTTPS by default.
+
+- **Redirects cross origins**. If your URL is
+  `https://x.github.io/repo` (no trailing slash) and GH Pages 301s to
+  `https://x.github.io/repo/` (trailing slash), the redirect itself
+  crosses an origin boundary in some browsers and CORS preflight
+  fails. Always link to the canonical URL with trailing slashes for
+  directories.
+
+---
+
+## Cache invalidation when the DB updates mid-session
+
+The DB on the server can change while users have a session open. Both
+the worker's LRU page cache **and** the browser's HTTP cache hold
+fragments of the old DB. Range requests for "new" pages will return
+bytes from the *new* DB while the cache still holds bytes from the
+*old* DB. SQLite then sees an internally inconsistent file and reports
+… you guessed it … `database disk image is malformed` — but this time
+the cause is staleness, not the gzip pitfall.
+
+Three mitigation strategies, in increasing order of investment:
+
+- **Tolerate gracefully**: catch the error in your query path and show
+  a banner like *"the index has been updated — reload the page to see
+  the latest."* Then `location.reload()` on click. Five lines of code,
+  acceptable for low-traffic sites.
+
+- **Service-worker snapshot**: register a service worker that caches
+  all `Range:` responses keyed by `(url, range-header)` plus the
+  initial `ETag`. If the `ETag` changes mid-session, the SW serves
+  from the stale cache for the rest of the session and lets new tabs
+  pick up the fresh build. Robust; ~50 lines of SW code.
+
+- **Content-addressed DB URL**: write the DB to a path that includes
+  the build SHA (e.g. `/index-<sha>.db`) and keep the last N versions.
+  Old sessions hold their version until their build is pruned. Pair
+  with `Cache-Control: immutable` on the per-build paths. Requires a
+  manifest and a pruning step in the build workflow. Robust and
+  invisible to users; bigger change to the deploy pipeline.
+
+memex itself uses option 1 (the page reload prompt) — its DBs are
+small and rebuild cadence is low, so the cost of an occasional reload
+is negligible.
+
+---
+
+## Upgrading memex / bumping the vendored SHA
+
+When you want to pull in a new memex release into your vendored
+`dist/wasm/` files:
+
+```bash
+# 1. Pick the new SHA (use a commit hash, not a branch name).
+NEW_SHA=<full-40-char-sha>
+
+# 2. List the full set of dist/wasm/ files at that SHA — chunk IDs may
+#    have changed since your last pin.
+gh api repos/zackees/memex/contents/dist/wasm?ref=$NEW_SHA \
+  --jq '.[].name' | sort
+
+# 3. Update your downloader script with the new SHA AND the new file list.
+#    The chunks are webpack-generated and named like memex-141.js,
+#    memex-901.js — they MUST all be present alongside memex.js or
+#    dynamic imports fail at runtime with:
+#    "Failed to fetch dynamically imported module: .../memex-NNN.js"
+
+# 4. Re-run your bundle build, then verify on the deployed site.
 ```
 
-The companion files (`memex-NNN.js` chunks + `sqlite3.wasm`) are loaded
-dynamically by `memex.js` at runtime, so they must sit next to it in
-your bundle root.
+After deploying, run the [verification checklist](#step-7--verify-the-deploy-actually-works)
+end-to-end. memex bumps the upstream `sqlite-wasm-http` version
+periodically; the patch regexes in
+`pages-src/scripts/patch-sqlite-wasm-http.mjs` are tied to the
+upstream file structure and may need adjustment. If you're on Path A
+(vendor), this is memex's problem to fix — your only obligation is to
+re-pin and re-test.
 
-**Pin to a commit SHA, not `main`.** The chunk filenames
-(`memex-141.js`, `memex-901.js`, …) are webpack-generated IDs that
-change every time memex is rebuilt. If you reference `main` and memex
-republishes, your site breaks because `memex.js` tries to dynamic-import
-a chunk ID that no longer exists in the published `dist/wasm/`. Example
-download URL with pinned SHA:
+---
 
-```
-https://raw.githubusercontent.com/zackees/memex/03fe8df…/dist/wasm/memex.js
-```
+## Continuous-deploy smoke test (Playwright CI)
 
-When you bump the SHA, re-download the full set of `memex-*.js` files
-and verify the new chunk list at the same path. memex's `pages-src/`
-emits these names from webpack; a clean checkout + `npm run build` is
-the canonical way to regenerate them.
-
-### 7. memex's `query()` returns columns + rows arrays, not row objects
-
-```js
-const { columns, rows } = await query(db, 'SELECT a, b FROM t LIMIT 1');
-// columns: ['a', 'b']
-// rows:    [[1, 2]]
-```
-
-If your existing code accesses `row.a` / `row.b` (row objects, e.g.
-from sql.js's `getAsObject()`), wrap `query()` and zip the result into
-per-column objects:
-
-```js
-async function rowsAsObjects(db, sql, params) {
-  const res = await query(db, sql, params);
-  return res.rows.map(r => Object.fromEntries(res.columns.map((c, i) => [c, r[i]])));
-}
-```
-
-Positional `?` placeholders work — pass an array as the third argument.
-Named `$name` placeholders also work — pass an object instead.
-
-### 8. Local development needs explicit MIME types for module scripts
-
-When testing locally with Python's stdlib `http.server` (or
-`RangeHTTPServer`), `.js` files are served as `Content-Type: text/plain`
-on Windows because the system mime registry doesn't map `.js` →
-`application/javascript`. Browsers strictly enforce MIME type for
-`<script type="module">` and refuse to load:
-
-> Failed to load module script: Expected a JavaScript-or-Wasm module
-> script but the server responded with a MIME type of "text/plain".
-
-Fix the local server:
+Run this as a separate workflow on a schedule (e.g. nightly) or after
+every deploy. It catches the failure modes that don't show up in
+build-time tests because they only manifest against the real CDN.
 
 ```python
-import mimetypes
-mimetypes.add_type('application/javascript', '.js')
-mimetypes.add_type('application/wasm', '.wasm')
+# tests/smoke_pages_deploy.py
+import asyncio, sys
+from playwright.async_api import async_playwright
+
+URL = "https://owner.github.io/repo/"
+
+async def main():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        ctx = await browser.new_context()
+        page = await ctx.new_page()
+
+        client = await ctx.new_cdp_session(page)
+        await client.send("Network.enable")
+        wire = []
+        client.on("Network.requestWillBeSentExtraInfo",
+                  lambda p: wire.append(("REQ", p["headers"])))
+        client.on("Network.responseReceivedExtraInfo",
+                  lambda p: wire.append(("RESP", p["headers"])))
+
+        errors = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+
+        await page.goto(URL, wait_until="domcontentloaded", timeout=30000)
+        # Wait for the DB to finish loading — adapt to your loader's signal.
+        await page.wait_for_function(
+            "document.querySelector('#dbCounts')?.textContent?.length",
+            timeout=30000,
+        )
+
+        # 1. Identity encoding was honored end-to-end.
+        identity_reqs = [h for k, h in wire if k == "REQ"
+                         and h.get("accept-encoding") == "identity"
+                         and "range" in h]
+        assert identity_reqs, "no Accept-Encoding: identity range requests issued"
+
+        # 2. Responses came back as 206 with proper Content-Range.
+        good_resps = [h for k, h in wire if k == "RESP"
+                      and "content-range" in h
+                      and h.get("content-encoding", "") != "gzip"]
+        assert good_resps, "DB responses were gzipped — Range was defeated"
+
+        # 3. No page errors.
+        assert not errors, f"page errors: {errors}"
+
+        print(f"OK: {len(identity_reqs)} identity range requests, "
+              f"{len(good_resps)} uncompressed 206 responses")
+
+asyncio.run(main())
 ```
 
-GitHub Pages serves the correct MIME type, so this is purely a
-local-testing artifact. It is **not** the same problem as the
-gzip-defeats-Range issue, but it produces an equally cryptic failure
-that makes you think the deployment is broken. Eliminate it before you
-debug anything else locally.
+Wire this into a workflow:
 
-### 9. The status message matters for debugging
+```yaml
+# .github/workflows/smoke-test.yml
+on:
+  schedule: [{ cron: "0 6 * * *" }]
+  workflow_dispatch: {}
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install playwright && python -m playwright install --with-deps chromium
+      - run: python tests/smoke_pages_deploy.py
+```
 
-These exact strings, each pointing at a different failure mode, are
-worth remembering:
+If this workflow goes red, the deployed site is broken for users even
+if `python -m http.server` works locally. **This is the most
+load-bearing test in the project.** Don't skip it.
 
-| Status string in the page | What it actually means |
-|---|---|
-| `database disk image is malformed` | gzip-defeated-Range; library got bytes from a gzip stream and tried to parse as SQLite |
-| `Length of the file not known. It must either be supplied in the config or given by the HTTP server.` | sql.js-httpvfs only — size-probe response had no `Content-Range` and `Content-Length` was the gzipped size |
-| `Failed to load module script: … MIME type "text/plain"` | Local server MIME issue (see #8 above), not a real deployment problem |
-| `Cannot install OPFS: Missing SharedArrayBuffer and/or Atomics` | Benign warning — sqlite-wasm-http tries OPFS first, falls back to in-memory; OPFS needs COOP/COEP headers that GH Pages doesn't set, and you don't need it for HTTP VFS anyway |
-
-Surface them prominently in your loader's error path. The amount of
-time saved by `dbStatus.textContent = err.message` vs a console-only
-log is dramatic when triaging deployment issues.
+---
 
 ## Common debugging mistakes
 
@@ -559,15 +890,26 @@ log is dramatic when triaging deployment issues.
 
 ## TL;DR for an LLM in a hurry
 
+**Path A — vendor memex's bundle (simpler, recommended)**
+
+1. Pick a memex commit SHA. `gh api repos/zackees/memex/contents/dist/wasm?ref=<SHA> --jq '.[].name'` to list the chunk files at that revision.
+2. Download `memex.js`, all `memex-*.js` chunks, and `sqlite3.wasm` from `https://raw.githubusercontent.com/zackees/memex/<SHA>/dist/wasm/` into your bundle root.
+3. In your HTML: `<script type="module">import { openMemexDb, query } from './memex.js'; const { db } = await openMemexDb(new URL('index.db', location.href).href);</script>`.
+4. Build `index.db` with FTS5 indexes + `PRAGMA page_size=4096` + `VACUUM`. Never `LIKE '%x%'` over big tables. See [schema rules](#schema-design-rules-under-byte-range-loading).
+5. Deploy via `actions/deploy-pages@v4`. No `gh-pages` branch needed.
+6. Verify with `curl -r 0-4095 -H "Accept-Encoding: identity" https://owner.github.io/repo/index.db` — must return `206 Partial Content` with `Content-Range: bytes 0-4095/<true-size>`. If you get `200 OK` instead, the deploy is broken — diagnose **before** opening the browser.
+7. Add the [Playwright smoke test](#continuous-deploy-smoke-test-playwright-ci) as a nightly CI job.
+
+**Path B — build from source**
+
 1. `npm install sqlite-wasm-http`.
 2. Copy memex's `patch-sqlite-wasm-http.mjs` and run it as `postinstall`.
-3. Open the DB with `headers: { 'Accept-Encoding': 'identity' }`.
-4. Build the DB with FTS5 indexes; never `LIKE '%x%'` over big tables.
-5. Deploy via `actions/deploy-pages@v4`.
-6. Verify with `curl -r 0-4095 -H "Accept-Encoding: identity"` — must
-   return `206 Partial Content` with `Content-Range`.
-7. Re-verify in Chrome via CDP, not via the Playwright high-level API.
+3. Open the DB with `headers: { 'Accept-Encoding': 'identity' }` in `createHttpBackend`.
+4. Steps 4–7 from Path A apply identically.
 
-If any of those steps is unclear, re-read the *Critical pitfalls*
-section. The cost of getting them wrong is hours of "why does SQLite say
-the DB is malformed when I can `sqlite3 index.db` locally just fine".
+**The one critical line in both paths**: `Accept-Encoding: identity`.
+Without it, GH Pages returns the full gzipped file with HTTP 200 every
+time you ask for a range — and SQLite reports `database disk image is
+malformed`. If any step is unclear, re-read [Critical pitfalls](#critical-pitfalls-read-this-before-writing-code).
+The cost of getting them wrong is hours of "why does SQLite say the DB
+is malformed when I can `sqlite3 index.db` locally just fine".
