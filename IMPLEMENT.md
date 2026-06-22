@@ -11,7 +11,7 @@
 
 1. [What memex actually does](#what-memex-actually-does-one-paragraph)
 2. [Two integration paths](#two-integration-paths-vendor-vs-build-from-source) — pick one
-3. [Critical pitfalls](#critical-pitfalls-read-this-before-writing-code) (1–9)
+3. [Critical pitfalls](#critical-pitfalls-read-this-before-writing-code) (1–9, incl. 4b + 8b)
 4. [Architecture](#architecture)
 5. [Step-by-step recipe](#step-by-step-adding-this-to-a-new-project) (build path)
 6. [Schema design rules under byte-range loading](#schema-design-rules-under-byte-range-loading)
@@ -314,6 +314,78 @@ local server still won't gzip the way GH Pages does, so a successful
 local test is necessary but not sufficient — always verify on the
 deployed site too.
 
+### 8b. NEVER add `<link rel="preload" href="your.db">` to the HTML head
+
+This one is brand new and was easy to overlook: a preload hint in the
+HTML head is a tempting performance optimization. **Do not preload the
+DB.**
+
+The browser fetches preload hints with its default `Accept-Encoding`
+(gzip + br + zstd). On GH Pages that means the CDN serves the
+**gzipped** full file and the browser caches that response. When
+`sqlite-wasm-http`'s patched worker later issues its first
+`Range: bytes=0-0` probe *with* `Accept-Encoding: identity`, the
+browser may short-circuit to the cached gzipped copy anyway. The
+probe reads `Content-Range: bytes 0-0/<gzipped-size>` and records
+`<gzipped-size>` as the file size. Every subsequent FTS5 page read
+past the gzipped offset returns garbage; SQLite reports the
+operation as an I/O error with no message:
+
+```
+worker response: { type: 'error', dbId: 'db#1@…', messageId: 'exec#1',
+                   result: {} }
+```
+
+The empty `result: {}` is the signature: the VFS returned a short
+read, SQLite couldn't interpret the page, and the worker had no
+exception to forward.
+
+Why this only shows up live:
+
+| | local dev (RangeHTTPServer / vite dev) | GitHub Pages |
+|---|---|---|
+| Default response for `site.db` | Uncompressed | gzipped |
+| Preload hint outcome | Browser caches uncompressed → workers see correct size | Browser caches gzipped → workers see wrong size |
+| Symptom in tests | All scenarios pass | DB opens, `SELECT 1` works, FTS5 query rejects with empty error |
+
+The fix is one line: delete the preload. Let the worker do the first
+fetch — its patched fetch carries `Accept-Encoding: identity` and the
+cache then stores the identity response. Subsequent ranged reads
+work.
+
+Preloading the `_meta.json` (small, gzip-safe text) is still fine.
+Just not the DB.
+
+The diagnostic recipe that pins this down:
+
+```python
+# Playwright — capture ALL site.db requests via page.on('request'),
+# NOT via CDP Network.requestWillBeSentExtraInfo (CDP doesn't see
+# worker-thread fetches by default).
+page.on("request", lambda r: requests.append((r.method, r.url, dict(r.headers)))
+        if "site.db" in r.url else None)
+async def on_resp(r):
+    if "site.db" not in r.url: return
+    h = await r.all_headers()
+    responses.append((r.status, r.url, h))
+page.on("response", lambda r: asyncio.create_task(on_resp(r)))
+```
+
+The smoking gun on a broken deploy:
+
+```
+=== site.db requests ===
+GET (no Range)             ← the preload!
+GET Range: bytes=0-0
+GET Range: bytes=0-1023
+=== site.db responses ===
+200 content-encoding=gzip  content-length=268740      ← gzipped full file
+206 content-encoding=gzip  content-range=…/268740     ← wrong total size!
+```
+
+On a healthy deploy you'd see ~30+ ranged 206 responses with
+`bytes …/1289216` (real uncompressed size) and no `content-encoding`.
+
 ### 9. The status message matters for debugging
 
 These exact strings, each pointing at a different failure mode, are
@@ -322,6 +394,7 @@ worth remembering:
 | Status string in the page | What it actually means |
 |---|---|
 | `database disk image is malformed` | gzip-defeated-Range; library got bytes from a gzip stream and tried to parse as SQLite |
+| `{type:'error', dbId:'…', messageId:'exec#N', result:{}}` (empty error, only on first FTS5 / large-table query) | Cache poisoned by a `<link rel="preload" href="*.db">` in the HTML head — see pitfall #8b. SELECT 1 works, FTS5 fails. Drop the preload. |
 | `Length of the file not known. It must either be supplied in the config or given by the HTTP server.` | sql.js-httpvfs only — size-probe response had no `Content-Range` and `Content-Length` was the gzipped size |
 | `Failed to load module script: … MIME type "text/plain"` | Local server MIME issue (see #8 above), not a real deployment problem |
 | `Cannot install OPFS: Missing SharedArrayBuffer and/or Atomics` | Benign warning — sqlite-wasm-http tries OPFS first, falls back to in-memory; OPFS needs COOP/COEP headers that GH Pages doesn't set, and you don't need it for HTTP VFS anyway |
