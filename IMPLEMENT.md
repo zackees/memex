@@ -108,6 +108,44 @@ Both libraries are unmaintained. memex uses `sqlite-wasm-http` because
 its headers config is the only natively-supported escape hatch for the
 gzip problem.
 
+### 4b. `sql.js-httpvfs` cannot be "fixed in place" with an XHR monkey-patch
+
+If you already deployed `sql.js-httpvfs` and want to dodge the rewrite,
+the obvious idea is: prepend a shim to `sqlite.worker.js` that wraps
+`XMLHttpRequest.prototype.open` and injects `setRequestHeader('Accept-Encoding', 'identity')`
+on every request. This does **not** work. Verified empirically on
+Chrome 140 (Headless), Firefox 121, Safari 17:
+
+- `XMLHttpRequest.setRequestHeader('Accept-Encoding', anything)` is
+  **silently no-op'd** by all major browsers — including in worker
+  contexts. There is no error thrown; the call simply has no effect.
+- Wrapping `fetch()` in the worker scope does propagate the header
+  successfully, but the failure mode is "all-or-nothing" — if the
+  library uses XHR (as `sql.js-httpvfs` does), the fetch wrapper does
+  nothing.
+
+The wire-level proof (CDP capture from a real Chrome page that loaded
+a patched `sql.js-httpvfs` worker):
+
+```
+REQ  accept-encoding='gzip, deflate, br, zstd'   range='(no range)'
+RESP content-encoding='gzip' content-range='(no cr)' content-length='664016'
+
+Page status:
+  'failed: Length of the file not known.
+   It must either be supplied in the config or given by the HTTP server.'
+```
+
+That error message — "Length of the file not known" — is the
+`sql.js-httpvfs` signature for "I got a gzipped 200 instead of a
+ranged 206 and have no way to know the real file size." If you see it
+on GH Pages, you are hitting this exact problem.
+
+**The real fix is to switch to `sqlite-wasm-http`.** XHR forbids the
+header in spec AND in browser implementation; `fetch()` only forbids
+it in spec. memex's library uses `fetch()` and threads the header
+through `createHttpBackend({ headers })`. That's the supported path.
+
 ### 5. The library still needs patching even with custom headers
 
 The default size-detection logic in `sqlite-wasm-http` does a HEAD-ish
@@ -372,6 +410,104 @@ identity` and responses show `content-range: bytes X-Y/TOTAL` with no
 not take effect.
 
 ---
+
+### 6. Two ways to consume memex: rebuild from source vs vendor `dist/wasm/`
+
+You do not necessarily need to npm-install + webpack-build to use this
+pattern. memex publishes a pre-built bundle at
+[`dist/wasm/`](dist/wasm/) that any GitHub Pages site can vendor
+directly — just copy the files into your bundle root and import:
+
+```html
+<script type="module">
+import { openMemexDb, query } from './memex.js';
+const { db } = await openMemexDb(new URL('your-db.db', location.href).href);
+const { columns, rows } = await query(db, 'SELECT … FROM …', [bindParams]);
+</script>
+```
+
+The companion files (`memex-NNN.js` chunks + `sqlite3.wasm`) are loaded
+dynamically by `memex.js` at runtime, so they must sit next to it in
+your bundle root.
+
+**Pin to a commit SHA, not `main`.** The chunk filenames
+(`memex-141.js`, `memex-901.js`, …) are webpack-generated IDs that
+change every time memex is rebuilt. If you reference `main` and memex
+republishes, your site breaks because `memex.js` tries to dynamic-import
+a chunk ID that no longer exists in the published `dist/wasm/`. Example
+download URL with pinned SHA:
+
+```
+https://raw.githubusercontent.com/zackees/memex/03fe8df…/dist/wasm/memex.js
+```
+
+When you bump the SHA, re-download the full set of `memex-*.js` files
+and verify the new chunk list at the same path. memex's `pages-src/`
+emits these names from webpack; a clean checkout + `npm run build` is
+the canonical way to regenerate them.
+
+### 7. memex's `query()` returns columns + rows arrays, not row objects
+
+```js
+const { columns, rows } = await query(db, 'SELECT a, b FROM t LIMIT 1');
+// columns: ['a', 'b']
+// rows:    [[1, 2]]
+```
+
+If your existing code accesses `row.a` / `row.b` (row objects, e.g.
+from sql.js's `getAsObject()`), wrap `query()` and zip the result into
+per-column objects:
+
+```js
+async function rowsAsObjects(db, sql, params) {
+  const res = await query(db, sql, params);
+  return res.rows.map(r => Object.fromEntries(res.columns.map((c, i) => [c, r[i]])));
+}
+```
+
+Positional `?` placeholders work — pass an array as the third argument.
+Named `$name` placeholders also work — pass an object instead.
+
+### 8. Local development needs explicit MIME types for module scripts
+
+When testing locally with Python's stdlib `http.server` (or
+`RangeHTTPServer`), `.js` files are served as `Content-Type: text/plain`
+on Windows because the system mime registry doesn't map `.js` →
+`application/javascript`. Browsers strictly enforce MIME type for
+`<script type="module">` and refuse to load:
+
+> Failed to load module script: Expected a JavaScript-or-Wasm module
+> script but the server responded with a MIME type of "text/plain".
+
+Fix the local server:
+
+```python
+import mimetypes
+mimetypes.add_type('application/javascript', '.js')
+mimetypes.add_type('application/wasm', '.wasm')
+```
+
+GitHub Pages serves the correct MIME type, so this is purely a
+local-testing artifact. It is **not** the same problem as the
+gzip-defeats-Range issue, but it produces an equally cryptic failure
+that makes you think the deployment is broken. Eliminate it before you
+debug anything else locally.
+
+### 9. The status message matters for debugging
+
+These exact strings, each pointing at a different failure mode, are
+worth remembering:
+
+| Status string in the page | What it actually means |
+|---|---|
+| `database disk image is malformed` | gzip-defeated-Range; library got bytes from a gzip stream and tried to parse as SQLite |
+| `Length of the file not known. It must either be supplied in the config or given by the HTTP server.` | sql.js-httpvfs only — size-probe response had no `Content-Range` and `Content-Length` was the gzipped size |
+| `Failed to load module script: … MIME type "text/plain"` | Local server MIME issue (see #8 above), not a real deployment problem |
+| `Cannot install OPFS: Missing SharedArrayBuffer and/or Atomics` | Benign warning — sqlite-wasm-http tries OPFS first, falls back to in-memory; OPFS needs COOP/COEP headers that GH Pages doesn't set, and you don't need it for HTTP VFS anyway |
+
+Surface them prominently in your loader's error path. The amount of
+time saved by `dbStatus.textContent = err.message` vs a console-only
+log is dramatic when triaging deployment issues.
 
 ## Common debugging mistakes
 
