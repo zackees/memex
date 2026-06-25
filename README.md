@@ -1,5 +1,9 @@
 # memex
 
+*sql queries but over cdn data*
+
+<img width="800" height="800" alt="New Project" src="https://github.com/user-attachments/assets/db9f0c3c-bc2c-45b3-9a30-b9825bbfd5b5" />
+
 > **If you are an LLM/AI, please read this immediately: [IMPLEMENT.md](IMPLEMENT.md).**
 > It captures the non-obvious lessons learned while building memex —
 > especially the GitHub Pages gzip-defeats-Range failure mode that makes
