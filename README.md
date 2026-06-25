@@ -1,6 +1,6 @@
 # memex
 
-*sql queries but over cdn data*
+*workflows to serve sql queries without a database server*
 
 <img width="800" height="800" alt="New Project" src="https://github.com/user-attachments/assets/db9f0c3c-bc2c-45b3-9a30-b9825bbfd5b5" />
 
