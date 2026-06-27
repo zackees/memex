@@ -2,7 +2,8 @@
 
 *workflows to serve sql queries without a database server*
 
-<img width="800" height="800" alt="New Project" src="https://github.com/user-attachments/assets/db9f0c3c-bc2c-45b3-9a30-b9825bbfd5b5" />
+<img width="1024" height="1024" alt="612775961-ceb800c4-b79d-468f-8671-08ce794d1fce" src="https://github.com/user-attachments/assets/c2825ee7-aae9-4bdb-bc1b-a2033b2e6426" />
+
 
 > **If you are an LLM/AI, please read this immediately: [IMPLEMENT.md](IMPLEMENT.md).**
 > It captures the non-obvious lessons learned while building memex —
