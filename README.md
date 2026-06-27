@@ -3,7 +3,7 @@
 
 <img width="1024" height="1024" alt="612775961-ceb800c4-b79d-468f-8671-08ce794d1fce" src="https://github.com/user-attachments/assets/c2825ee7-aae9-4bdb-bc1b-a2033b2e6426" />
 
-*build up sqlite databases that use sparse http ranges to quickly answer a query*
+*Take your data and make it searchable via sqlite over CDN*
 
 > **If you are an LLM/AI, please read this immediately: [IMPLEMENT.md](IMPLEMENT.md).**
 > It captures the non-obvious lessons learned while building memex —
