@@ -15,15 +15,28 @@ export { createSQLiteThread, createHttpBackend };
  *
  * @param {string} url - Full URL to the .db file
  * @param {object} [options]
- * @param {number} [options.maxPageSize=1024] - SQLite page size (must match DB)
+ * @param {number} [options.maxPageSize=32768] - SQLite page size cap (must be
+ *   >= the DB's `PRAGMA page_size`; bench data in #9 shows the 32 KB default
+ *   is 24-40 % faster than 4 KB on FTS5-heavy WAN-hosted DBs)
  * @param {number} [options.timeout=30000] - HTTP request timeout in ms
  * @param {number} [options.cacheSize=4096] - LRU cache size in KB
  * @returns {Promise<{db: Function, backend: object, close: Function}>}
  */
 export async function openMemexDb(url, options = {}) {
-  // Force sync mode: single background worker, no SharedArrayBuffer needed
+  // Force sync mode: single background worker, no SharedArrayBuffer needed.
+  //
+  // maxPageSize default bumped 4096 → 32768: on any DB > ~5 MB served over
+  // HTTP Range, latency-per-round-trip dominates over bandwidth-per-request.
+  // Bench (median of 7 runs on a 29 MB FTS5 corpus, PRAGMA cache_size = 100):
+  //   page_size   4096:  esp+register  86.9 ms   unscoped register  233 ms
+  //   page_size  32768:  esp+register  66.1 ms   unscoped register  144 ms
+  //   page_size  65536:  esp+register  51.2 ms   unscoped register  139 ms
+  // 32 KB is the sweet spot — 24-40 % faster than 4 KB, only 8x bytes per
+  // fetch. See zackees/memex#9 for the full write-up. Callers whose DB was
+  // built at page_size=4096 can still opt back in via
+  // `openMemexDb(url, { maxPageSize: 4096 })`.
   const backend = createHttpBackend({
-    maxPageSize: options.maxPageSize || 4096,
+    maxPageSize: options.maxPageSize || 32768,
     timeout: options.timeout || 30000,
     cacheSize: options.cacheSize || 4096,
     backendType: 'sync',

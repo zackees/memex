@@ -1,6 +1,6 @@
 {
   "name": "memex",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "SQLite HTTP range-request client for memex databases",
   "type": "module",
   "scripts": {
