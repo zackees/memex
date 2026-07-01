@@ -1,7 +1,25 @@
 {
-  "name": "memex",
+  "name": "zackees-memex",
   "version": "1.1.0",
   "description": "SQLite HTTP range-request client for memex databases",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zackees/memex.git",
+    "directory": "pages-src"
+  },
+  "homepage": "https://github.com/zackees/memex",
+  "bugs": {
+    "url": "https://github.com/zackees/memex/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "memex.js",
+  "types": "memex.d.ts",
+  "keywords": [
+    "sqlite", "fts5", "http-range", "wasm",
+    "static-site", "github-pages"
+  ],
   "type": "module",
   "scripts": {
     "deps:patch": "node ./scripts/patch-sqlite-wasm-http.mjs",
