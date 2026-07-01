@@ -22,6 +22,10 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 PRESENTATION_SCHEMA = """
+-- 32 KB pages match memex's default `maxPageSize` (see #9) — 24-40 %
+-- faster FTS5 queries over HTTP Range than the old 4 KB / 1 KB.
+-- MUST be first, before any CREATE, or SQLite ignores it.
+PRAGMA page_size = 32768;
 PRAGMA journal_mode = DELETE;
 PRAGMA foreign_keys = ON;
 
@@ -950,7 +954,8 @@ def optimize_for_http(conn: sqlite3.Connection) -> None:
     conn.execute("INSERT INTO commits_trigram(commits_trigram) VALUES ('optimize')")
     conn.execute("INSERT INTO comments_fts(comments_fts) VALUES ('optimize')")
     conn.commit()
-    # page_size already set to 1024 at creation, just VACUUM to compact
+    # page_size = 32768 set at creation (see PRESENTATION_SCHEMA); this
+    # VACUUM compacts pages contiguously so adjacent rows share pages.
     conn.execute("VACUUM")
 
 

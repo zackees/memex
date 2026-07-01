@@ -424,7 +424,12 @@ def index_wiki(conn: sqlite3.Connection, repo: str, repo_dir: Path) -> int:
 
 
 def optimize_for_http(conn: sqlite3.Connection) -> None:
-    conn.execute("PRAGMA page_size = 1024")
+    # 32 KB matches memex's default `maxPageSize` — bench shows
+    # 24-40 % faster FTS5 queries over HTTP than the old 1 KB / 4 KB
+    # defaults (see #9). One 32 KB range request at 100 ms RTT beats
+    # eight 4 KB range requests at 100 ms RTT each; latency dominates
+    # over bandwidth on any WAN link.
+    conn.execute("PRAGMA page_size = 32768")
     conn.execute("VACUUM")
     conn.execute("PRAGMA journal_mode = DELETE")
 

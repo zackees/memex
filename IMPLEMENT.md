@@ -492,7 +492,9 @@ defensively in case `node_modules/` was warm from a cache.
 import { createSQLiteThread, createHttpBackend } from 'sqlite-wasm-http';
 
 const backend = createHttpBackend({
-  maxPageSize: 4096,             // must match the DB's PRAGMA page_size
+  maxPageSize: 32768,            // must match the DB's PRAGMA page_size
+                                  // (see § "Schema design rules" below on
+                                  // why 32 KB beats 4 KB on WAN links)
   timeout: 30000,
   cacheSize: 4096,               // KB of LRU page cache in the worker
   backendType: 'sync',           // single worker, no SharedArrayBuffer
@@ -539,9 +541,15 @@ async function query(db, sql, bind) {
 
 Two non-obvious schema rules under byte-range loading:
 
-- **Build with the right page size**: `PRAGMA page_size = 4096;` before
-  the first table is created (4 KB is the SQLite default and matches
-  `maxPageSize` above). This minimizes per-request payload.
+- **Build with the right page size**: `PRAGMA page_size = 32768;` before
+  the first table is created (32 KB matches memex's default `maxPageSize`
+  since v1.1; must be set **before** any `CREATE TABLE` and can't be
+  changed later without `VACUUM INTO`). This gives ~24-40 % faster
+  FTS5 queries over HTTP than the old 4 KB default — one 32 KB request
+  at 100 ms RTT beats eight 4 KB requests at 100 ms RTT each. See the
+  bench in the [Performance / cost model](#performance--cost-model)
+  section below. If you're stuck with a 4 KB DB, pass
+  `maxPageSize: 4096` to `openMemexDb` explicitly.
 - **Build indexes for every search column**. `LIKE '%foo%'` becomes a
   full table scan, which on byte-range loading means downloading every
   page. Use FTS5 (`search_porter`, `search_trigram`) for name searches
@@ -657,7 +665,7 @@ designing your DB:
 
 | Do | Don't | Why |
 |---|---|---|
-| `PRAGMA page_size = 4096` before creating any tables | leave the page size at whatever the default is (varies by SQLite version) | The client's `maxPageSize` must match. Mismatch ⇒ silent corruption or extra fetches. 4 KB matches HTTP/2's typical frame granularity and FTS5's chunking. |
+| `PRAGMA page_size = 32768` **before** creating any tables | leave the page size at whatever the default is (varies by SQLite version) | The client's `maxPageSize` must match. Mismatch ⇒ silent corruption or extra fetches. 32 KB is memex's default since v1.1 (see #9) — bench shows 24-40 % faster FTS5 queries than 4 KB. If you have to interop with a DB built at 4 KB, pass `openMemexDb(url, { maxPageSize: 4096 })`. |
 | Index every column used in `WHERE`, `ORDER BY`, or `JOIN` | rely on `LIKE '%foo%'` for search | Each unindexed predicate ⇒ full table scan ⇒ download every page. |
 | Use FTS5 for text search (porter + trigram) | use plain TEXT columns + LIKE for fuzzy match | FTS5 reads ~5–20 index pages per query; LIKE reads every page. |
 | Inline small auxiliary blobs as TEXT/BLOB columns (e.g. `boards.json_blob`) | store them as separate files | One SQL query > one extra HTTP request, especially when the client is already mid-conversation with the DB. |
